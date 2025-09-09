@@ -1,0 +1,36 @@
+bin/
+cmake-build-debug/
+cmake-build/
+ResultAnalysis/
+dataset
+# Build directories
+cmake-build*/
+bin/
+*.o
+*.a
+*.so
+*.dylib
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+
+# IDE
+.idea/
+.vscode/
+
+# Python venvs
+.venv/
+
+# Logs
+*.log
+
+# Data artifacts
+files/*.csv
+files/*.html
+dataset/MELTON/*.dlabel
+dataset/MELTON/*.dorder
+dataset/MELTON/*.txt
