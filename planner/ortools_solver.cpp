@@ -72,7 +72,6 @@ static int time_ms_along_path(const std::vector<int>& path,
 }
 
 
-
 // Distance-only CVRP (no time windows, no pickup-delivery pairs).
 // Minimizes total distance and respects per-vehicle capacity.
 // Outputs the same CSVs as your PDPTW solver.
@@ -317,9 +316,7 @@ bool solve_cvrp_distance(
     double max_speed_cap = 0.0;
     for (const auto& veh : vehicles)
     {
-        double tcap = (veh.type == "Bike" ? 20.0 :
-                       veh.type == "Scooter" ? 30.0 :
-                       veh.type == "Moped" ? 45.0 : 60.0);
+        double tcap = (veh.type == "Bike" ? 20.0 : veh.type == "Scooter" ? 30.0 : veh.type == "Moped" ? 45.0 : 60.0);
         max_speed_cap = std::max(max_speed_cap, tcap);
     }
 
@@ -364,7 +361,7 @@ bool solve_cvrp_distance(
     for (int i = 0; i < N; ++i)
     {
         const int64_t node_idx = manager.NodeToIndex(
-            RoutingIndexManager::NodeIndex(i + 1)  // commuter nodes are 1..N
+            RoutingIndexManager::NodeIndex(i + 1) // commuter nodes are 1..N
         );
 
         // Earliest pickup time
@@ -382,9 +379,9 @@ bool solve_cvrp_distance(
             latest_pickup = std::max(earliest_pickup, std::min(horizon_ms, latest_pickup));
         }
 
-        std::cerr << "  Commuter " << (i+1) << " (node=" << commuter_nodes[i] << "): "
-                  << "pickup window [" << earliest_pickup << ", " << latest_pickup << "] ms, "
-                  << "travel to station = " << travel_to_station_ms[i] << " ms\n";
+        std::cerr << "  Commuter " << (i + 1) << " (node=" << commuter_nodes[i] << "): "
+            << "pickup window [" << earliest_pickup << ", " << latest_pickup << "] ms, "
+            << "travel to station = " << travel_to_station_ms[i] << " ms\n";
 
         // Set the time window for this commuter node
         time_dim.CumulVar(node_idx)->SetRange(earliest_pickup, latest_pickup);
@@ -397,9 +394,48 @@ bool solve_cvrp_distance(
         time_dim.CumulVar(routing.End(v))->SetRange(0, horizon_ms);
     }
 
+    // In planner/ortools_solver.cpp
+    // Add this after setting time windows, before search parameters
+
+    // In planner/ortools_solver.cpp
+    // Replace the entire disjunction section with this:
+
+    // ---- Customer visit requirements ----
+    if (cfg.allow_partial_solution)
+    {
+        // Calculate penalty based on sum of all distances
+        int64_t sum_distances = 0;
+        for (int i = 0; i < N; ++i)
+        {
+            std::vector<int> leg;
+            int d_mm = query_path(commuter_nodes[i], station_node, leg);
+            if (d_mm > 0) sum_distances += d_mm;
+        }
+
+        // Penalty = sum of all distances (so skipping one customer costs as much as serving all)
+        const int64_t penalty = (sum_distances > 0) ? sum_distances : 10000000000LL;
+
+        std::cerr << "[cvrp] PARTIAL SOLUTIONS ENABLED - customers optional with penalty="
+            << penalty << " mm\n";
+
+        for (int i = 0; i < N; ++i)
+        {
+            const int64_t node_idx = manager.NodeToIndex(
+                RoutingIndexManager::NodeIndex(i + 1)
+            );
+            routing.AddDisjunction({node_idx}, penalty);
+        }
+    }
+    else
+    {
+        std::cerr << "[cvrp] PARTIAL SOLUTIONS DISABLED - all customers MANDATORY\n";
+        // DO NOT add any disjunctions - let OR-Tools handle all nodes as required
+        // The default VRP behavior without disjunctions is to visit all nodes
+    }
+
     // ---- Search parameters: Savings + GLS to encourage pooling ----
     RoutingSearchParameters params = operations_research::DefaultRoutingSearchParameters();
-    params.set_first_solution_strategy(FirstSolutionStrategy::SAVINGS);
+    params.set_first_solution_strategy(FirstSolutionStrategy::PARALLEL_CHEAPEST_INSERTION);
     params.set_local_search_metaheuristic(LocalSearchMetaheuristic::GUIDED_LOCAL_SEARCH);
     params.mutable_time_limit()->set_seconds(cfg.time_limit_seconds);
     params.set_log_search(cfg.log_search);
@@ -412,14 +448,51 @@ bool solve_cvrp_distance(
     }
 
     std::cerr << "[cvrp] Solution found! Total distance: "
-              << solution->ObjectiveValue() << " mm\n";
+        << solution->ObjectiveValue() << " mm\n";
+
+    // ---- Check which commuters were served ----
+    std::vector<bool> served(N, false);
+    for (int v = 0; v < routing.vehicles(); ++v)
+    {
+        int64_t idx = routing.Start(v);
+        while (!routing.IsEnd(idx))
+        {
+            int m = manager.IndexToNode(idx).value();
+            if (m >= 1 && m <= N) // It's a commuter node (1..N)
+            {
+                served[m - 1] = true;
+            }
+            idx = solution->Value(routing.NextVar(idx));
+        }
+    }
+
+    int served_count = 0;
+    int unserved_count = 0;
+    std::cerr << "[cvrp] Service report:\n";
+    for (int i = 0; i < N; ++i)
+    {
+        if (served[i])
+        {
+            served_count++;
+        }
+        else
+        {
+            unserved_count++;
+            std::cerr << "  ❌ Commuter " << (i + 1) << " (node=" << commuter_nodes[i]
+                << ") NOT SERVED - window [" << pickup_earliest_ms[i]
+                << ", " << dropoff_latest_ms[i] - travel_to_station_ms[i]
+                << "] ms too tight\n";
+        }
+    }
+    std::cerr << "[cvrp] Served: " << served_count << "/" << N
+        << ", Unserved: " << unserved_count << "\n";
 
     // ---- Diagnostic: print per-vehicle loads and times ----
     const auto& cap_dim = routing.GetDimensionOrDie("Capacity");
     for (int v = 0; v < routing.vehicles(); ++v)
     {
         std::cerr << "[diag] Vehicle " << v << " (" << vehicles[v].type
-                  << ", cap=" << vehicles[v].capacity << ") route:\n";
+            << ", cap=" << vehicles[v].capacity << ") route:\n";
         int64_t idx = routing.Start(v);
         bool has_customers = false;
 
@@ -437,7 +510,7 @@ bool solve_cvrp_distance(
             {
                 has_customers = true;
                 std::cerr << "  -> C" << m << " (node=" << node_for(m)
-                          << ", load=" << load << ", time=" << time << " ms)\n";
+                    << ", load=" << load << ", time=" << time << " ms)\n";
             }
             idx = solution->Value(routing.NextVar(idx));
         }
@@ -445,7 +518,7 @@ bool solve_cvrp_distance(
         int64_t end_load = solution->Value(cap_dim.CumulVar(routing.End(v)));
         int64_t end_time = solution->Value(time_dim.CumulVar(routing.End(v)));
         std::cerr << "  -> DEPOT (load=" << end_load << ", time=" << end_time
-                  << " ms) [END]\n";
+            << " ms) [END]\n";
 
         if (!has_customers)
         {
@@ -510,6 +583,16 @@ bool solve_cvrp_distance(
                 << "" << "\",ASSIGNED\n";
         }
     }
+    // Add unserved commuters to assignments file
+    for (int i = 0; i < N; ++i)
+    {
+        if (!served[i])
+        {
+            aout << commuter_nodes[i] << ",,,," << station_node
+                << ",\"\",\"\",UNSERVED\n";
+        }
+    }
+
 
     aout.close();
     rvout.close();

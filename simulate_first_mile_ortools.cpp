@@ -105,6 +105,7 @@ int main(int argc, char* argv[])
     OrToolsConfig cfg;
     cfg.time_limit_seconds = 30;
     cfg.log_search = false;
+    cfg.allow_partial_solution = true;  // ADD THIS LINE
 
     // --- DIAG A: distance matrix & savings (drop this BEFORE calling solve_pdptw) ---
     auto print_distance_diag = [&](const std::vector<int>& commuter_nodes,

@@ -9,8 +9,8 @@
 
 inline std::vector<AVType> default_av_types() {
     return {
-            {"Car",     60.0, 4, 1},
-            {"Moped",   45.0, 2, 0},
+            {"Car",     60.0, 4, 5},
+            {"Moped",   45.0, 2, 2},
             {"Scooter", 30.0, 1, 0},
             {"Bike",    20.0, 1, 0}
     };

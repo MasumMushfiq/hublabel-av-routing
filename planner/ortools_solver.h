@@ -25,6 +25,7 @@ using QueryPathFn = std::function<int(int,int,std::vector<int>&)>;
 struct OrToolsConfig {
     int time_limit_seconds = 10;     // wall time cap
     bool log_search = false;         // OR-Tools solver logs
+    bool allow_partial_solution = true;  // ADD THIS - make customers optional
 };
 
 // Minimal vehicle info for PDPTW (capacity in people)
