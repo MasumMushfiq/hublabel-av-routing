@@ -58,7 +58,7 @@ int main(int argc, char*argv[]){
         }
 
         cout << "Hello World!" << endl;
-        cout << label.query_p(874, 6323) << endl;
+        cout << label.query_p(874, 874) << endl;
         cout << label.query_p(6323, 17353) << endl;
         // cout << lab.query(6323 , 17455) << endl;
 

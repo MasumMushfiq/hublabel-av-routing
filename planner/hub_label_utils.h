@@ -14,6 +14,10 @@
  */
 bool init_labels(const std::string& dist_prefix, const std::string& time_prefix);
 
+// Initialize ONLY the distance hub labels (no time labels).
+// Expects files: <dist_prefix>.dlabel and <dist_prefix>.dorder
+bool init_distance_labels(const std::string& dist_prefix);
+
 /** Shortest-path distance (millimetres). Optionally fills path (vector<int>).
  *  Returns -1 if labels not loaded.
  */

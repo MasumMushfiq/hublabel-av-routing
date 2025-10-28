@@ -67,6 +67,7 @@ static int query_cost(const LabelPack& P, int u, int v, std::vector<int>* path_o
     }
 }
 
+
 bool init_labels(const std::string& dist_prefix, const std::string& time_prefix)
 {
     g_dist_loaded = g_time_loaded = false;
@@ -88,6 +89,20 @@ bool init_labels(const std::string& dist_prefix, const std::string& time_prefix)
     }
 
     return g_dist_loaded && g_time_loaded;
+}
+
+
+bool init_distance_labels(const std::string& dist_prefix) {
+    g_dist_loaded = false;
+
+    try {
+        load_pack(dist_prefix, g_dist);
+        g_dist_loaded = true;
+        std::cerr << "[labels] loaded distance pack: " << dist_prefix << "\n";
+    } catch (const std::exception& e) {
+        std::cerr << "[labels] distance load failed: " << e.what() << "\n";
+    }
+    return g_dist_loaded;
 }
 
 int distance_mm(int u, int v, std::vector<int>* path_out)

@@ -38,7 +38,7 @@ int main(int argc, char* argv[]) {
     const std::string time_prefix    = argv[4];   // e.g., "files/melton_time"  -> .dorder/.dlabel (time in ms)
     const std::string output_file    = argv[5];
 
-    const std::string edge_dist_speed = "dataset/MELTON/melton_graph_speed.txt";
+    const std::string edge_dist_speed = "files/melton_graph_speed.txt";
 
     // 1) Load domain inputs
     std::vector<Commuter> commuters = load_commuters(commuters_file);
