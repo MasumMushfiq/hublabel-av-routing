@@ -9,10 +9,11 @@
 
 inline std::vector<AVType> default_av_types() {
     return {
-            {"Car",     60.0, 4, 5},
-            {"Moped",   45.0, 2, 2},
-            {"Scooter", 30.0, 1, 0},
-            {"Bike",    20.0, 1, 0}
+        // name, max_speed_kmph, capacity, fleet_size
+            {"Bus",     60.0, 12, 2},   // Large shuttle for high demand
+            {"Car",     80.0, 4,  5},   // Standard vehicle
+            {"Moped",   45.0, 2,  3},   // Small 2-seater
+            {"Scooter", 30.0, 1,  4}    // Single passenger (or small 2-wheeler)
     };
 }
 

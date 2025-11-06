@@ -32,6 +32,7 @@ struct OrToolsConfig {
 struct OrToolsVehicle {
     std::string type;  // "Bike"/"Scooter"/"Moped"/"Car"
     int capacity = 1;
+    double max_speed_kmph = 60.0; // default
 };
 
 

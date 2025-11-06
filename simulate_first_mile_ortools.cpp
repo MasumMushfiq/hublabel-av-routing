@@ -68,7 +68,7 @@ int main(int argc, char* argv[])
     {
         for (int k = 0; k < t.fleet_size; ++k)
         {
-            vehicles.push_back(OrToolsVehicle{t.name, t.capacity});
+            vehicles.push_back(OrToolsVehicle{t.name, t.capacity, t.max_speed_kmph});
         }
     }
     if (vehicles.empty())
