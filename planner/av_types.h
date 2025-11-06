@@ -11,6 +11,8 @@ struct AVType {
     std::string name;       // e.g., "Car"
     double max_speed_kmph;  // simple speed model for now
     int capacity;           // seats (1 for scooter/bike, etc.)
+    double liters_per_100km;
+    double co2_kg_per_liter;
     int fleet_size;         // how many vehicles of this type available
 };
 

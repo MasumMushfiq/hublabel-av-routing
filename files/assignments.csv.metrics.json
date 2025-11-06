@@ -31,5 +31,53 @@
     "loaded_vmt_km": 17.20,
     "empty_vmt_km": 10.00,
     "empty_ratio": 0.37
+  },
+  "per_vehicle_type": {
+    "Bus": {
+      "vehicles_used": 0,
+      "total_trips": 0,
+      "passengers_carried": 0,
+      "avg_occupancy": 0.00,
+      "total_vmt_km": 0.00,
+      "loaded_vmt_km": 0.00,
+      "empty_vmt_km": 0.00,
+      "empty_ratio": 0.00
+    },
+    "Car": {
+      "vehicles_used": 1,
+      "total_trips": 1,
+      "passengers_carried": 4,
+      "avg_occupancy": 2.56,
+      "total_vmt_km": 21.29,
+      "loaded_vmt_km": 14.23,
+      "empty_vmt_km": 7.06,
+      "empty_ratio": 0.33
+    },
+    "Moped": {
+      "vehicles_used": 1,
+      "total_trips": 1,
+      "passengers_carried": 1,
+      "avg_occupancy": 1.00,
+      "total_vmt_km": 5.91,
+      "loaded_vmt_km": 2.97,
+      "empty_vmt_km": 2.94,
+      "empty_ratio": 0.50
+    },
+    "Scooter": {
+      "vehicles_used": 0,
+      "total_trips": 0,
+      "passengers_carried": 0,
+      "avg_occupancy": 0.00,
+      "total_vmt_km": 0.00,
+      "loaded_vmt_km": 0.00,
+      "empty_vmt_km": 0.00,
+      "empty_ratio": 0.00
+    }
+  },
+  "fuel_emissions": {
+    "total_fuel_liters": 2.57,
+    "fuel_per_km": 0.09,
+    "total_co2_kg": 5.94,
+    "co2_per_passenger_km": 0.29
   }
 }

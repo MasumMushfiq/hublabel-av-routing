@@ -1,12 +1,10 @@
-//
-// Created by Md Mushfiq on 29/10/2025.
-//
-
+// planner/av_metrics.h
 #ifndef ROUTINGKIT_AV_METRICS_H
 #define ROUTINGKIT_AV_METRICS_H
 
 #include <string>
 #include <vector>
+#include <map>
 #include <functional>
 #include <unordered_map>
 
@@ -25,6 +23,19 @@ using QueryPathFn = std::function<int(int, int, std::vector<int>&)>;
 
 // Forward declare OrToolsVehicle
 struct OrToolsVehicle;
+
+// Per-vehicle-type metrics
+struct VehicleTypeMetrics {
+    std::string vehicle_type;
+    int vehicles_used = 0;
+    int total_trips = 0;
+    int passengers_carried = 0;
+    double avg_occupancy = 0.0;              // Distance-weighted
+    double total_vmt_km = 0.0;
+    double loaded_vmt_km = 0.0;
+    double empty_vmt_km = 0.0;
+    double empty_ratio = 0.0;
+};
 
 struct AVServiceMetrics {
     // Coverage
@@ -59,7 +70,40 @@ struct AVServiceMetrics {
     double loaded_vmt_km = 0.0;
     double empty_vmt_km = 0.0;
     double empty_ratio = 0.0;
+
+    // NEW: Per-Vehicle-Type Breakdown
+    std::map<std::string, VehicleTypeMetrics> per_vehicle_type;
+
+    // NEW: Fuel & Emissions (to be implemented)
+    double total_fuel_liters = 0.0;
+    double fuel_per_km = 0.0;
+    double total_co2_kg = 0.0;
+    double co2_per_passenger_km = 0.0;
 };
+
+// Fuel parameters helper function
+struct FuelParameters {
+    double liters_per_100km;
+    double co2_kg_per_liter;
+
+    [[nodiscard]] double get_co2_per_100km() const {
+        return liters_per_100km * co2_kg_per_liter;
+    }
+};
+
+// Get fuel parameters for vehicle type
+inline FuelParameters get_fuel_parameters(const std::string& vehicle_type) {
+    if (vehicle_type == "Bus")
+        return {27.8, 2.68};  // Diesel bus
+    else if (vehicle_type == "Car")
+        return {11.1, 2.31};  // Petrol car
+    else if (vehicle_type == "Moped")
+        return {3.5, 2.31};   // Petrol moped
+    else if (vehicle_type == "Scooter")
+        return {2.5, 2.31};   // Petrol scooter
+    else
+        return {11.1, 2.31};  // Default to car
+}
 
 // Calculate metrics from solution
 AVServiceMetrics calculate_av_metrics(
@@ -78,6 +122,5 @@ void write_metrics_json(const AVServiceMetrics& metrics, const std::string& file
 
 // Print summary to console
 void print_metrics_summary(const AVServiceMetrics& metrics);
-
 
 #endif //ROUTINGKIT_AV_METRICS_H
