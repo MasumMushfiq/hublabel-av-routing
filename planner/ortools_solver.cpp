@@ -1,4 +1,5 @@
 #include "ortools_solver.h"
+#include "av_metrics.h"
 #include <edge_attrs.h>
 
 #include <cmath>
@@ -525,6 +526,18 @@ bool solve_cvrp_distance(
             std::cerr << "  (empty route - vehicle not used)\n";
         }
     }
+
+
+    auto metrics = calculate_av_metrics(
+    commuter_nodes, station_node, vehicles,
+    query_path, edge_tbl, routing, solution, manager, pickup_earliest_ms
+    );
+
+    std::string metrics_file = assignments_csv + ".metrics.json";
+    write_metrics_json(metrics, metrics_file);
+    print_metrics_summary(metrics);
+
+    std::cerr << "[cvrp] Metrics written to: " << metrics_file << "\n";
 
     // ---- Emit outputs (same schema as before) ----
     std::ofstream aout(assignments_csv);

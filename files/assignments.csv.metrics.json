@@ -1,0 +1,35 @@
+{
+  "coverage": {
+    "total_commuters": 5,
+    "served_commuters": 5,
+    "unserved_commuters": 0,
+    "service_rate": 1.00
+  },
+  "time_performance_minutes": {
+    "avg_wait_time": 4.32,
+    "max_wait_time": 11.30,
+    "avg_in_vehicle_time": 8.34,
+    "avg_total_trip_time": 12.65
+  },
+  "distance_km": {
+    "total_vmt": 27.20,
+    "avg_distance_per_trip": 13.60,
+    "total_passenger_km": 20.25,
+    "avg_detour_ratio": 2.01
+  },
+  "sharing_occupancy": {
+    "total_vehicle_trips": 2,
+    "avg_passengers_per_trip": 2.50,
+    "solo_trips": 1,
+    "shared_trips": 1,
+    "pooling_rate": 0.50,
+    "avg_vehicle_occupancy": 1.78
+  },
+  "vehicle_utilization": {
+    "vehicles_used": 2,
+    "vehicles_idle": 5,
+    "loaded_vmt_km": 17.20,
+    "empty_vmt_km": 10.00,
+    "empty_ratio": 0.37
+  }
+}

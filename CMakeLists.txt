@@ -187,6 +187,7 @@ add_executable(simulate_first_mile_ortools
         ${SRC}
         ${PLANNER_SRC}
         planner/ortools_solver.cpp
+        planner/av_metrics.cpp
         simulate_first_mile_ortools.cpp
 )
 
