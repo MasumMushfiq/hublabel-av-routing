@@ -31,6 +31,8 @@ install_manifest.txt
 # Data artifacts
 files/*.csv
 files/*.html
+files/outputs/*.*
+files/inputs/*.*
 dataset/MELTON/*.dlabel
 dataset/MELTON/*.dorder
 dataset/MELTON/*.txt

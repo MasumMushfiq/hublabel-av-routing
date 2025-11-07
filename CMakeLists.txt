@@ -22,6 +22,7 @@ include_directories("/opt/homebrew/opt/google-sparsehash/include")
 include_directories(include)
 include_directories(src)
 include_directories(planner)
+include_directories(planner/external)
 
 # --- Core sources (unchanged) ---
 set(SRC
@@ -187,6 +188,20 @@ link_directories(
         "${ORT_BUILD}/lib"                 # libortools.dylib, libprotobuf.dylib
 )
 
+# =====================================================================
+# --- config_loader library ---
+# =====================================================================
+add_library(config_loader
+        planner/config_loader.cpp
+        planner/config_loader.h
+)
+
+target_include_directories(config_loader PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/planner
+        ${CMAKE_CURRENT_SOURCE_DIR}/planner/external
+)
+
+
 # --- simulate_first_mile_ortools target ---
 add_executable(simulate_first_mile_ortools
         ${SRC}
@@ -202,6 +217,7 @@ target_compile_definitions(simulate_first_mile_ortools PRIVATE OR_PROTO_DLL=)
 
 # Link everything explicitly (no transitive CMake packages)
 target_link_libraries(simulate_first_mile_ortools PRIVATE
+        config_loader
         "${ORT_BUILD}/lib/libortools.dylib"
         "${PROTOBUF_LIB}"
         ZLIB::ZLIB

@@ -114,7 +114,7 @@ static double calculate_vehicle_distance_penalty(
 // HELPER FUNCTIONS FOR MODULARIZATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Setup vehicle-specific arc costs
+// UPDATED SIGNATURE
 static void setup_vehicle_costs(
     RoutingModel& routing,
     RoutingIndexManager& manager,
@@ -122,22 +122,46 @@ static void setup_vehicle_costs(
     const QueryPathFn& query_path,
     int station_node,
     const std::vector<int>& commuter_nodes,
-    int depot_m)
+    int depot_m,
+    const std::vector<VehicleConfig>& vehicle_configs,  // ADD THIS
+    const PenaltyConfig& penalty_config)                 // ADD THIS
 {
     std::cerr << "[cvrp] Setting up vehicle-type-specific arc costs...\n";
+    std::cerr << "[cvrp] Penalty parameters: α=" << penalty_config.alpha
+              << ", β=" << penalty_config.beta << "\n";
+
+    // Build lookup: vehicle type -> config
+    std::map<std::string, VehicleConfig> config_map;
+    for (const auto& vc : vehicle_configs) {
+        config_map[vc.name] = vc;
+        std::cerr << "[cvrp]   " << vc.name << ": band ["
+                  << vc.lower_km << ", " << vc.upper_km << "] km, "
+                  << "fixed cost " << vc.fixed_cost_km_equiv << " km-equiv\n";
+    }
 
     for (int v = 0; v < routing.vehicles(); ++v)
     {
-        const std::string veh_type = vehicles[v].type; // COPY, not reference
+        const std::string veh_type = vehicles[v].type;
+
+        // Get config for this vehicle type
+        if (config_map.find(veh_type) == config_map.end()) {
+            std::cerr << "[cvrp] WARNING: No config found for vehicle type: "
+                      << veh_type << ", using defaults\n";
+            continue;
+        }
+
+        const VehicleConfig vc = config_map.at(veh_type);  // COPY for lambda
+        const double alpha = penalty_config.alpha;          // COPY for lambda
+        const double beta = penalty_config.beta;            // COPY for lambda
 
         const int veh_cb = routing.RegisterTransitCallback(
-            [&query_path, &manager, station_node, &commuter_nodes, depot_m, veh_type]
+            [&query_path, &manager, station_node, &commuter_nodes, depot_m,
+             veh_type, vc, alpha, beta]  // Capture copies
             (int64_t from_index, int64_t to_index) -> int64_t
             {
                 const int from_m = manager.IndexToNode(from_index).value();
                 const int to_m = manager.IndexToNode(to_index).value();
 
-                // Map manager index to real node
                 const int u = (from_m == depot_m) ? station_node : commuter_nodes[from_m - 1];
                 const int v_node = (to_m == depot_m) ? station_node : commuter_nodes[to_m - 1];
 
@@ -147,7 +171,15 @@ static void setup_vehicle_costs(
                 if (d_mm <= 0) return int64_t{1'000'000'000};
 
                 double d_km = d_mm / 1e6;
-                double penalty = calculate_vehicle_distance_penalty(veh_type, d_km);
+
+                // Use smooth penalty function
+                double penalty = calculate_smooth_penalty(
+                    d_km,
+                    vc.lower_km,
+                    vc.upper_km,
+                    alpha,
+                    beta
+                );
 
                 return static_cast<int64_t>(d_mm * penalty);
             }
@@ -156,25 +188,26 @@ static void setup_vehicle_costs(
         routing.SetArcCostEvaluatorOfVehicle(veh_cb, v);
     }
 
-    // Set fixed costs
+    // Set fixed costs (convert km to mm)
+    std::cerr << "[cvrp] Setting fixed costs:\n";
     for (int v = 0; v < routing.vehicles(); ++v)
     {
-        int64_t fixed_cost = 0;
+        const std::string veh_type = vehicles[v].type;
+        if (config_map.find(veh_type) == config_map.end()) continue;
 
-        if (vehicles[v].type == "Bus")
-            fixed_cost = 1000000;
-        else if (vehicles[v].type == "Car")
-            fixed_cost = 500000;
-        else if (vehicles[v].type == "Moped")
-            fixed_cost = 200000;
-        else if (vehicles[v].type == "Scooter")
-            fixed_cost = 100000;
+        const VehicleConfig& vc = config_map.at(veh_type);
+        int64_t fixed_cost_mm = static_cast<int64_t>(vc.fixed_cost_km_equiv * 1e6);
+        routing.SetFixedCostOfVehicle(fixed_cost_mm, v);
 
-        routing.SetFixedCostOfVehicle(fixed_cost, v);
+        if (v == 0 || vehicles[v-1].type != veh_type) {
+            std::cerr << "[cvrp]   " << veh_type << ": "
+                      << vc.fixed_cost_km_equiv << " km-equiv\n";
+        }
     }
 
     std::cerr << "[cvrp] ✓ Vehicle-specific costs applied\n";
 }
+
 
 // Add capacity dimension
 static void add_capacity_dimension(
@@ -346,7 +379,7 @@ static void add_disjunctions(
     const QueryPathFn& query_path,
     int station_node,
     const std::vector<int>& commuter_nodes,
-    const OrToolsConfig& cfg)
+    const SolverConfig& cfg)
 {
     const int N = static_cast<int>(commuter_nodes.size());
 
@@ -614,7 +647,7 @@ CVRPSolution solve_cvrp_distance_with_metrics(
     const std::vector<int64_t>& dropoff_latest_ms,
     const std::string& assignments_csv,
     const std::string& av_routes_csv,
-    const OrToolsConfig& cfg)
+    const ExperimentConfig& exp_config )
 {
     using operations_research::LocalSearchMetaheuristic;
 
@@ -651,7 +684,7 @@ CVRPSolution solve_cvrp_distance_with_metrics(
     // 2. Setup model components
     // ═══════════════════════════════════════════════════════════════════════
 
-    setup_vehicle_costs(routing, manager, vehicles, query_path, station_node, commuter_nodes, depot_m);
+    setup_vehicle_costs(routing, manager, vehicles, query_path, station_node, commuter_nodes, depot_m, exp_config.vehicle_types, exp_config.penalty);
     add_capacity_dimension(routing, manager, vehicles, depot_m);
     add_time_dimension(routing, manager, query_path, edge_tbl, vehicles, station_node, commuter_nodes, depot_m);
 
@@ -660,17 +693,26 @@ CVRPSolution solve_cvrp_distance_with_metrics(
         station_node, commuter_nodes, pickup_earliest_ms, dropoff_latest_ms
     );
 
-    add_disjunctions(routing, manager, query_path, station_node, commuter_nodes, cfg);
+    add_disjunctions(routing, manager, query_path, station_node, commuter_nodes, exp_config.solver);
 
     // ═══════════════════════════════════════════════════════════════════════
     // 3. Solve
     // ═══════════════════════════════════════════════════════════════════════
 
     RoutingSearchParameters params = operations_research::DefaultRoutingSearchParameters();
-    params.set_first_solution_strategy(FirstSolutionStrategy::PARALLEL_CHEAPEST_INSERTION);
+    if (exp_config.solver.first_solution_strategy == "PATH_CHEAPEST_ARC") {
+        params.set_first_solution_strategy(FirstSolutionStrategy::PATH_CHEAPEST_ARC);
+    } else if (exp_config.solver.first_solution_strategy == "PARALLEL_CHEAPEST_INSERTION") {
+        params.set_first_solution_strategy(FirstSolutionStrategy::PARALLEL_CHEAPEST_INSERTION);
+    } else if (exp_config.solver.first_solution_strategy == "SAVINGS") {
+        params.set_first_solution_strategy(FirstSolutionStrategy::SAVINGS);
+    } else
+    {
+        params.set_first_solution_strategy(FirstSolutionStrategy::PARALLEL_CHEAPEST_INSERTION);
+    }
     params.set_local_search_metaheuristic(LocalSearchMetaheuristic::GUIDED_LOCAL_SEARCH);
-    params.mutable_time_limit()->set_seconds(cfg.time_limit_seconds);
-    params.set_log_search(cfg.log_search);
+    params.mutable_time_limit()->set_seconds(exp_config.solver.time_limit_seconds);
+    params.set_log_search(exp_config.solver.log_search);
 
     const auto* solution = routing.SolveWithParameters(params);
     if (!solution)
@@ -714,34 +756,4 @@ CVRPSolution solve_cvrp_distance_with_metrics(
     result.manager = &manager;
 
     return result;
-}
-
-// Backward-compatible wrapper - writes metrics internally
-bool solve_cvrp_distance(
-    const std::vector<int>& commuter_nodes,
-    int station_node,
-    const std::vector<OrToolsVehicle>& vehicles,
-    const QueryPathFn& query_path,
-    const std::unordered_map<EdgeKey, EdgeAttr>& edge_tbl,
-    const std::vector<int64_t>& pickup_earliest_ms,
-    const std::vector<int64_t>& dropoff_latest_ms,
-    const std::string& assignments_csv,
-    const std::string& av_routes_csv,
-    const OrToolsConfig& cfg)
-{
-    auto result = solve_cvrp_distance_with_metrics(
-        commuter_nodes, station_node, vehicles, query_path, edge_tbl,
-        pickup_earliest_ms, dropoff_latest_ms, assignments_csv, av_routes_csv, cfg
-    );
-
-    if (result.success)
-    {
-        // Write metrics for backward compatibility
-        std::string metrics_file = assignments_csv + ".metrics.json";
-        write_metrics_json(result.metrics, metrics_file);
-        print_metrics_summary(result.metrics);
-        std::cerr << "[cvrp] Metrics written to: " << metrics_file << "\n";
-    }
-
-    return result.success;
 }

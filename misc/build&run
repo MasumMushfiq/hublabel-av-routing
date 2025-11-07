@@ -1,4 +1,0 @@
-./bin/construct ./dataset/MELTON/melton_graph_distance.txt ./dataset/MELTON/melton_dist ./dataset/MELTON/melton_dist
-./bin/construct ./dataset/MELTON/melton_graph_time.txt ./dataset/MELTON/melton_time ./dataset/MELTON/melton_time
-
-./bin/simulate_first_mile files/commuters.csv files/stations.csv dataset/MELTON/melton_dist dataset/MELTON/melton_time files/assignments.csv

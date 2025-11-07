@@ -16,25 +16,85 @@
 #include "planner/baseline_calculator.h"
 #include "planner/comparison_utility.h"
 #include "planner/av_metrics.h"
+#include "planner/config_loader.h"
+
+
+// Convert to legacy AVType
+std::vector<AVType> to_av_types(const std::vector<VehicleConfig>& configs)
+{
+    std::vector<AVType> av_types;
+    for (const auto& vc : configs) {
+        AVType av;
+        av.name = vc.name;
+        av.max_speed_kmph = vc.max_speed_kmph;
+        av.capacity = vc.capacity;
+        av.liters_per_100km = vc.fuel_l_per_100km;
+        av.co2_kg_per_liter = vc.co2_kg_per_liter;
+        av.fleet_size = vc.fleet_size;
+        av_types.push_back(av);
+    }
+    return av_types;
+}
+
+// Convert to OrToolsVehicle instances
+std::vector<OrToolsVehicle> to_ortools_vehicles(const std::vector<VehicleConfig>& configs)
+{
+    std::vector<OrToolsVehicle> vehicles;
+    for (const auto& vc : configs) {
+        for (int i = 0; i < vc.fleet_size; ++i) {
+            OrToolsVehicle v;
+            v.type = vc.name;
+            v.capacity = vc.capacity;
+            v.max_speed_kmph = vc.max_speed_kmph;
+            vehicles.push_back(v);
+        }
+    }
+    return vehicles;
+}
+
+// Get fuel parameters from config
+FuelParameters get_fuel_parameters_from_config(
+    const std::string& vehicle_type,
+    const std::vector<VehicleConfig>& configs)
+{
+    for (const auto& vc : configs) {
+        if (vc.name == vehicle_type) {
+            return FuelParameters{
+                vc.fuel_l_per_100km,
+                vc.co2_kg_per_liter
+            };
+        }
+    }
+
+    // Default fallback
+    return FuelParameters{11.1, 2.31};
+}
 
 int main(int argc, char* argv[])
 {
-    if (argc != 7)
+    if (argc != 8)  // ADD ONE MORE ARGUMENT
     {
         std::cerr << "Usage: " << argv[0] << "\n"
-            << "  commuters.csv stations.csv dist_label_prefix speed_table.txt assignments.csv av_routes.csv\n";
+            << "  commuters.csv stations.csv dist_label_prefix speed_table.txt "
+            << "assignments.csv av_routes.csv config.json\n";
         return 1;
     }
+
     const std::string commuters_csv = argv[1];
     const std::string stations_csv = argv[2];
     const std::string dist_prefix = argv[3];
     const std::string speed_table = argv[4];
     const std::string assignments = argv[5];
     const std::string av_routes_out = argv[6];
+    const std::string config_file = argv[7];  // NEW
+
 
     // ═══════════════════════════════════════════════════════════════════════
     // 1. Load inputs
     // ═══════════════════════════════════════════════════════════════════════
+
+    // Load configuration
+    ExperimentConfig exp_config = load_experiment_config(config_file);
 
     auto commuters = load_commuters(commuters_csv);
     auto stations = load_stations(stations_csv);
@@ -110,19 +170,22 @@ int main(int argc, char* argv[])
     // 3. Setup vehicles and time windows (using filtered commuters)
     // ═══════════════════════════════════════════════════════════════════════
 
-    std::vector<AVType> types = default_av_types();
-    std::vector<OrToolsVehicle> vehicles;
-    for (const auto& t : types)
-    {
-        for (int k = 0; k < t.fleet_size; ++k)
-        {
-            vehicles.push_back(OrToolsVehicle{t.name, t.capacity, t.max_speed_kmph});
-        }
-    }
-    if (vehicles.empty())
-    {
-        vehicles.push_back(OrToolsVehicle{"Car", 4, 60.0});
-    }
+    // std::vector<AVType> types = default_av_types();
+    // std::vector<OrToolsVehicle> vehicles;
+    // for (const auto& t : types)
+    // {
+    //     for (int k = 0; k < t.fleet_size; ++k)
+    //     {
+    //         vehicles.push_back(OrToolsVehicle{t.name, t.capacity, t.max_speed_kmph});
+    //     }
+    // }
+    // if (vehicles.empty())
+    // {
+    //     vehicles.push_back(OrToolsVehicle{"Car", 4, 60.0});
+    // }
+
+    std::vector<OrToolsVehicle> vehicles = to_ortools_vehicles(exp_config.vehicle_types);
+
 
     std::vector<int> commuter_nodes;
     commuter_nodes.reserve(commuters.size());
@@ -160,7 +223,7 @@ int main(int argc, char* argv[])
         original_count  // Pass original count for reporting
     );
     print_baseline_summary(baseline);
-    write_baseline_json(baseline, "files/baseline.json");
+    write_baseline_json(baseline, "files/outputs/baseline.json");
 
     // ═══════════════════════════════════════════════════════════════════════
     // 5. RUN AV OPTIMIZATION
@@ -172,17 +235,17 @@ int main(int argc, char* argv[])
     std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
 
     CVRPSolution av_result = solve_cvrp_distance_with_metrics(
-        commuter_nodes,
-        station_node,
-        vehicles,
-        query_path,
-        edge_tbl,
-        pickup_earliest_ms,
-        dropoff_latest_ms,
-        assignments,
-        av_routes_out,
-        cfg
-    );
+            commuter_nodes,
+            station_node,
+            vehicles,
+            query_path,
+            edge_tbl,
+            pickup_earliest_ms,
+            dropoff_latest_ms,
+            assignments,
+            av_routes_out,
+            exp_config  // ONLY PASS THIS (contains solver settings too)
+        );
 
     if (!av_result.success)
     {
@@ -225,7 +288,7 @@ int main(int argc, char* argv[])
     );
 
     print_comparison_summary(comparison);
-    write_comparison_json(comparison, "files/comparison.json");
+    write_comparison_json(comparison, "files/outputs/comparison.json");
 
     std::cout << "\n";
     std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
