@@ -1,36 +1,42 @@
 {
   "coverage": {
-    "total_commuters": 5,
-    "served_commuters": 5,
-    "unserved_commuters": 0,
-    "service_rate": 1.00
+    "total_commuters": 92,
+    "served": 90,
+    "unserved": 2,
+    "service_rate": 97.83
   },
-  "time_performance_minutes": {
-    "avg_wait_time": 4.25,
-    "max_wait_time": 11.17,
-    "avg_in_vehicle_time": 8.28,
-    "avg_total_trip_time": 12.53
+  "time_minutes": {
+    "avg_wait": 1.83,
+    "max_wait": 11.66,
+    "avg_in_vehicle": 6.97,
+    "avg_total_trip": 8.80
   },
   "distance_km": {
-    "total_vmt": 27.20,
-    "avg_distance_per_trip": 13.60,
-    "total_passenger_km": 20.25,
-    "avg_detour_ratio": 2.01
+    "total_vmt": 410.49,
+    "loaded_vmt": 258.60,
+    "empty_vmt": 151.89,
+    "empty_ratio_pct": 37.00,
+    "avg_per_trip": 11.40,
+    "passenger_km": 625.59,
+    "avg_detour_ratio": 1.36
   },
-  "sharing_occupancy": {
-    "total_vehicle_trips": 2,
+  "sharing": {
+    "total_trips": 36,
     "avg_passengers_per_trip": 2.50,
-    "solo_trips": 1,
-    "shared_trips": 1,
-    "pooling_rate": 0.50,
-    "avg_vehicle_occupancy": 1.78
+    "solo_trips": 2,
+    "shared_trips": 34,
+    "pooling_rate_pct": 94.44,
+    "avg_occupancy": 2.05
   },
-  "vehicle_utilization": {
-    "vehicles_used": 2,
-    "vehicles_idle": 12,
-    "loaded_vmt_km": 17.20,
-    "empty_vmt_km": 10.00,
-    "empty_ratio": 0.37
+  "fleet": {
+    "vehicles_used": 36,
+    "vehicles_idle": 64
+  },
+  "fuel_emissions": {
+    "total_fuel_liters": 29.61,
+    "fuel_per_100km": 7.21,
+    "total_co2_kg": 68.39,
+    "co2_g_per_pax_km": 109.32
   },
   "per_vehicle_type": {
     "Bus": {
@@ -41,43 +47,37 @@
       "total_vmt_km": 0.00,
       "loaded_vmt_km": 0.00,
       "empty_vmt_km": 0.00,
-      "empty_ratio": 0.00
+      "empty_ratio_pct": 0.00
     },
     "Car": {
-      "vehicles_used": 1,
-      "total_trips": 1,
-      "passengers_carried": 4,
-      "avg_occupancy": 2.56,
-      "total_vmt_km": 21.29,
-      "loaded_vmt_km": 14.23,
-      "empty_vmt_km": 7.06,
-      "empty_ratio": 0.33
+      "vehicles_used": 10,
+      "total_trips": 10,
+      "passengers_carried": 40,
+      "avg_occupancy": 3.05,
+      "total_vmt_km": 200.59,
+      "loaded_vmt_km": 136.64,
+      "empty_vmt_km": 63.94,
+      "empty_ratio_pct": 31.88
     },
     "Moped": {
+      "vehicles_used": 25,
+      "total_trips": 25,
+      "passengers_carried": 49,
+      "avg_occupancy": 1.70,
+      "total_vmt_km": 209.28,
+      "loaded_vmt_km": 121.64,
+      "empty_vmt_km": 87.64,
+      "empty_ratio_pct": 41.88
+    },
+    "Scooter": {
       "vehicles_used": 1,
       "total_trips": 1,
       "passengers_carried": 1,
       "avg_occupancy": 1.00,
-      "total_vmt_km": 5.91,
-      "loaded_vmt_km": 2.97,
-      "empty_vmt_km": 2.94,
-      "empty_ratio": 0.50
-    },
-    "Scooter": {
-      "vehicles_used": 0,
-      "total_trips": 0,
-      "passengers_carried": 0,
-      "avg_occupancy": 0.00,
-      "total_vmt_km": 0.00,
-      "loaded_vmt_km": 0.00,
-      "empty_vmt_km": 0.00,
-      "empty_ratio": 0.00
+      "total_vmt_km": 0.63,
+      "loaded_vmt_km": 0.31,
+      "empty_vmt_km": 0.31,
+      "empty_ratio_pct": 50.00
     }
-  },
-  "fuel_emissions": {
-    "total_fuel_liters": 2.57,
-    "fuel_per_km": 0.09,
-    "total_co2_kg": 5.94,
-    "co2_per_passenger_km": 0.29
   }
 }

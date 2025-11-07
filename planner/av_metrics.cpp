@@ -143,6 +143,16 @@ AVServiceMetrics calculate_av_metrics(
             // Calculate segment distance
             std::vector<int> leg;
             int d_mm = query_path(visit_nodes[i], visit_nodes[i + 1], leg);
+
+            // FIX: Validate path exists (skip invalid segments from unreachable nodes)
+            if (d_mm <= 0 || leg.empty())
+            {
+                std::cerr << "[metrics] WARNING: Invalid path from node "
+                          << visit_nodes[i] << " to " << visit_nodes[i + 1]
+                          << ", returned distance: " << d_mm << " mm. Skipping segment.\n";
+                continue;  // Skip this invalid segment
+            }
+
             double seg_km = d_mm / 1e6;
 
             segment_distances_km.push_back(seg_km);
@@ -166,7 +176,7 @@ AVServiceMetrics calculate_av_metrics(
         type_metrics_acc[veh_type].loaded_vmt_km += route_loaded_km;
         type_metrics_acc[veh_type].empty_vmt_km += route_empty_km;
 
-        // ========== Step 6: Calculate distance-weighted occupancy ==========
+        // ========== Step 6: Calculate distance-weighted occupancy AND passenger-km ==========
         if (route_loaded_km > 0)
         {
             double weighted_occ_sum = 0;
@@ -178,6 +188,9 @@ AVServiceMetrics calculate_av_metrics(
                 {
                     weighted_occ_sum += segment_occupancy[i] * segment_distances_km[i];
                     loaded_dist_sum += segment_distances_km[i];
+
+                    // FIX: Accumulate actual passenger-km (occupancy × distance)
+                    m.total_passenger_km += segment_occupancy[i] * segment_distances_km[i];
                 }
             }
 
@@ -199,62 +212,76 @@ AVServiceMetrics calculate_av_metrics(
             int m = manager.IndexToNode(idx).value();
             if (m >= 1 && m <= N)
             {
-                commuter_to_routing_idx[m - 1] = idx;
+                int commuter_idx = m - 1;
+                commuter_to_routing_idx[commuter_idx] = idx;
             }
             idx = solution->Value(routing.NextVar(idx));
         }
 
-        // ========== Step 8: Per-passenger metrics ==========
-        for (size_t p = 0; p < passenger_commuter_indices.size(); ++p)
+        // ========== Step 8: Per-passenger wait/travel times & detour ==========
+        for (int commuter_idx : passenger_commuter_indices)
         {
-            int commuter_idx = passenger_commuter_indices[p];
-            size_t pickup_pos = passenger_positions[p];
+            int64_t routing_idx = commuter_to_routing_idx[commuter_idx];
 
-            // --- Time Metrics ---
-            int64_t pickup_routing_idx = commuter_to_routing_idx[commuter_idx];
-            int64_t pickup_time_ms = solution->Value(time_dim.CumulVar(pickup_routing_idx));
-            int64_t dropoff_time_ms = solution->Value(time_dim.CumulVar(routing.End(v)));
+            // Pickup time
+            int64_t pickup_time_ms = solution->Value(time_dim.CumulVar(routing_idx));
 
-            double wait_min = std::max(0.0,
-                (pickup_time_ms - pickup_earliest_ms[commuter_idx]) / 60000.0);
-            double in_vehicle_min = (dropoff_time_ms - pickup_time_ms) / 60000.0;
+            // Earliest allowed pickup (time window start)
+            int64_t earliest_ms = pickup_earliest_ms[commuter_idx];
+
+            // Wait time = pickup_time - earliest
+            double wait_min = (pickup_time_ms - earliest_ms) / (60.0 * 1000.0);
+            if (wait_min < 0) wait_min = 0;
 
             total_wait += wait_min;
-            total_in_vehicle += in_vehicle_min;
             m.max_wait_time_min = std::max(m.max_wait_time_min, wait_min);
 
-            // --- Distance Metrics ---
-            std::vector<int> direct_leg;
-            int direct_mm = query_path(visit_nodes[pickup_pos], station_node, direct_leg);
-            double direct_km = direct_mm / 1e6;
-            m.total_passenger_km += direct_km;
+            // Dropoff time (at depot after all pickups)
+            int64_t dropoff_idx = routing.End(v);
+            int64_t dropoff_time_ms = solution->Value(time_dim.CumulVar(dropoff_idx));
 
-            double actual_km = 0;
-            for (size_t seg = pickup_pos; seg < segment_distances_km.size(); ++seg)
-            {
-                actual_km += segment_distances_km[seg];
-            }
+            // In-vehicle time
+            double in_vehicle_min = (dropoff_time_ms - pickup_time_ms) / (60.0 * 1000.0);
+            total_in_vehicle += in_vehicle_min;
+
+            // Detour ratio = actual in-vehicle distance / direct distance
+            int home_node = commuter_nodes[commuter_idx];
+            std::vector<int> direct_path;
+            int direct_mm = query_path(home_node, station_node, direct_path);
+            double direct_km = (direct_mm > 0) ? (direct_mm / 1e6) : 0.0;
 
             if (direct_km > 0.001)
             {
-                double detour_ratio = actual_km / direct_km;
-                total_detour_ratio += detour_ratio;
+                // Find actual distance traveled by this passenger
+                double actual_km = 0;
+                size_t pickup_pos = 0;
+                for (size_t p = 0; p < passenger_positions.size(); ++p)
+                {
+                    if (passenger_commuter_indices[p] == commuter_idx)
+                    {
+                        pickup_pos = passenger_positions[p];
+                        break;
+                    }
+                }
+
+                // Sum segments from pickup to depot
+                for (size_t i = pickup_pos; i < segment_distances_km.size(); ++i)
+                {
+                    actual_km += segment_distances_km[i];
+                }
+
+                double detour = actual_km / direct_km;
+                total_detour_ratio += detour;
                 detour_count++;
             }
         }
-    } // End of vehicle loop
+    }
 
-    // ========== Step 9: Aggregate metrics ==========
-
-    // Service coverage
+    // ========== Finalize metrics ==========
     m.served_commuters = 0;
-    for (bool s : served)
-        if (s) m.served_commuters++;
-
+    for (bool s : served) if (s) m.served_commuters++;
     m.unserved_commuters = N - m.served_commuters;
-
-    if (N > 0)
-        m.service_rate = static_cast<double>(m.served_commuters) / N;
+    m.service_rate = (N > 0) ? (static_cast<double>(m.served_commuters) / N) : 0.0;
 
     // Time averages
     if (m.served_commuters > 0)
@@ -264,220 +291,251 @@ AVServiceMetrics calculate_av_metrics(
         m.avg_total_trip_time_min = m.avg_wait_time_min + m.avg_in_vehicle_time_min;
     }
 
-    // Vehicle trip averages
+    // Distance efficiency
     if (m.total_vehicle_trips > 0)
     {
         m.avg_passengers_per_trip /= m.total_vehicle_trips;
-        m.avg_vehicle_occupancy /= m.total_vehicle_trips;
-        m.pooling_rate = static_cast<double>(m.shared_trips) / m.total_vehicle_trips;
-        m.avg_distance_per_trip_km = m.total_vmt_km / m.total_vehicle_trips;
     }
 
-    // Detour average
+    if (m.total_vmt_km > 0)
+    {
+        m.avg_distance_per_trip_km = m.total_vmt_km / m.total_vehicle_trips;
+        m.empty_ratio = (m.empty_vmt_km / m.total_vmt_km) * 100.0;
+    }
+
+    if (m.vehicles_used > 0)
+    {
+        m.avg_vehicle_occupancy /= m.vehicles_used;
+    }
+
     if (detour_count > 0)
     {
         m.avg_detour_ratio = total_detour_ratio / detour_count;
     }
 
-    // Empty ratio
-    if (m.total_vmt_km > 0.001)
+    if (m.total_vehicle_trips > 0)
     {
-        m.empty_ratio = m.empty_vmt_km / m.total_vmt_km;
+        m.pooling_rate = (static_cast<double>(m.shared_trips) / m.total_vehicle_trips) * 100.0;
     }
 
-    // ========== Step 10: Finalize per-vehicle-type metrics ==========
-    for (auto& [type, vtm] : type_metrics_acc)
-    {
-        if (vtm.total_trips > 0)
-        {
-            vtm.avg_occupancy /= vtm.total_trips;
-        }
-
-        if (vtm.total_vmt_km > 0.001)
-        {
-            vtm.empty_ratio = vtm.empty_vmt_km / vtm.total_vmt_km;
-        }
-
-        m.per_vehicle_type[type] = vtm;
-    }
-
-    // ========== Step 11: Calculate Fuel & Emissions ==========
-
-    // Calculate total fuel consumed and CO₂ emitted
+    // ========== Fuel & Emissions (PER VEHICLE TYPE) ==========
     m.total_fuel_liters = 0.0;
     m.total_co2_kg = 0.0;
 
-    for (const auto& [type, vtm] : m.per_vehicle_type)
+    for (auto& [vtype, vmetrics] : type_metrics_acc)
     {
-        if (vtm.total_vmt_km > 0.001)
+        if (vmetrics.total_vmt_km > 0)
         {
-            FuelParameters fuel = get_fuel_parameters(type);
+            // Get fuel parameters for this vehicle type
+            FuelParameters fuel_params = get_fuel_parameters(vtype);
 
-            // Fuel = (VMT in km) / 100 * (L/100km)
-            double fuel_liters = (vtm.total_vmt_km / 100.0) * fuel.liters_per_100km;
+            // Calculate fuel and CO₂ for this vehicle type
+            double type_fuel_liters = (vmetrics.total_vmt_km * fuel_params.liters_per_100km) / 100.0;
+            double type_co2_kg = type_fuel_liters * fuel_params.co2_kg_per_liter;
 
-            // CO₂ = Fuel (L) * CO₂ factor (kg/L)
-            double co2_kg = fuel_liters * fuel.co2_kg_per_liter;
+            // Accumulate totals
+            m.total_fuel_liters += type_fuel_liters;
+            m.total_co2_kg += type_co2_kg;
 
-            m.total_fuel_liters += fuel_liters;
-            m.total_co2_kg += co2_kg;
+            // Calculate per-type empty ratio
+            if (vmetrics.total_vmt_km > 0)
+            {
+                vmetrics.empty_ratio = (vmetrics.empty_vmt_km / vmetrics.total_vmt_km) * 100.0;
+            }
+
+            // Normalize per-type occupancy
+            if (vmetrics.vehicles_used > 0)
+            {
+                vmetrics.avg_occupancy /= vmetrics.vehicles_used;
+            }
         }
     }
 
-    // Calculate derived metrics
-    if (m.total_vmt_km > 0.001)
+    // Fleet average fuel efficiency
+    if (m.total_vmt_km > 0)
     {
-        m.fuel_per_km = m.total_fuel_liters / m.total_vmt_km;
+        m.fuel_per_km = (m.total_fuel_liters / m.total_vmt_km) * 100.0;  // L/100km
     }
 
-    if (m.total_passenger_km > 0.001)
+    // CO₂ intensity
+    if (m.total_passenger_km > 0)
     {
-        m.co2_per_passenger_km = m.total_co2_kg / m.total_passenger_km;
+        m.co2_per_passenger_km = (m.total_co2_kg * 1000.0) / m.total_passenger_km;  // g/pax-km
     }
+
+    // Store per-vehicle-type metrics
+    m.per_vehicle_type = type_metrics_acc;
 
     return m;
 }
 
-void write_metrics_json(const AVServiceMetrics& m, const std::string& filename)
+void write_metrics_json(const AVServiceMetrics& metrics, const std::string& filename)
 {
     std::ofstream out(filename);
+    if (!out.is_open())
+    {
+        std::cerr << "Error: Could not open " << filename << " for writing\n";
+        return;
+    }
+
     out << std::fixed << std::setprecision(2);
-
     out << "{\n";
+
+    // Coverage
     out << "  \"coverage\": {\n";
-    out << "    \"total_commuters\": " << m.total_commuters << ",\n";
-    out << "    \"served_commuters\": " << m.served_commuters << ",\n";
-    out << "    \"unserved_commuters\": " << m.unserved_commuters << ",\n";
-    out << "    \"service_rate\": " << m.service_rate << "\n";
-    out << "  },\n";
-    out << "  \"time_performance_minutes\": {\n";
-    out << "    \"avg_wait_time\": " << m.avg_wait_time_min << ",\n";
-    out << "    \"max_wait_time\": " << m.max_wait_time_min << ",\n";
-    out << "    \"avg_in_vehicle_time\": " << m.avg_in_vehicle_time_min << ",\n";
-    out << "    \"avg_total_trip_time\": " << m.avg_total_trip_time_min << "\n";
-    out << "  },\n";
-    out << "  \"distance_km\": {\n";
-    out << "    \"total_vmt\": " << m.total_vmt_km << ",\n";
-    out << "    \"avg_distance_per_trip\": " << m.avg_distance_per_trip_km << ",\n";
-    out << "    \"total_passenger_km\": " << m.total_passenger_km << ",\n";
-    out << "    \"avg_detour_ratio\": " << m.avg_detour_ratio << "\n";
-    out << "  },\n";
-    out << "  \"sharing_occupancy\": {\n";
-    out << "    \"total_vehicle_trips\": " << m.total_vehicle_trips << ",\n";
-    out << "    \"avg_passengers_per_trip\": " << m.avg_passengers_per_trip << ",\n";
-    out << "    \"solo_trips\": " << m.solo_trips << ",\n";
-    out << "    \"shared_trips\": " << m.shared_trips << ",\n";
-    out << "    \"pooling_rate\": " << m.pooling_rate << ",\n";
-    out << "    \"avg_vehicle_occupancy\": " << m.avg_vehicle_occupancy << "\n";
-    out << "  },\n";
-    out << "  \"vehicle_utilization\": {\n";
-    out << "    \"vehicles_used\": " << m.vehicles_used << ",\n";
-    out << "    \"vehicles_idle\": " << m.vehicles_idle << ",\n";
-    out << "    \"loaded_vmt_km\": " << m.loaded_vmt_km << ",\n";
-    out << "    \"empty_vmt_km\": " << m.empty_vmt_km << ",\n";
-    out << "    \"empty_ratio\": " << m.empty_ratio << "\n";
+    out << "    \"total_commuters\": " << metrics.total_commuters << ",\n";
+    out << "    \"served\": " << metrics.served_commuters << ",\n";
+    out << "    \"unserved\": " << metrics.unserved_commuters << ",\n";
+    out << "    \"service_rate\": " << (metrics.service_rate * 100.0) << "\n";
     out << "  },\n";
 
-    // NEW: Per-vehicle-type breakdown
+    // Time performance
+    out << "  \"time_minutes\": {\n";
+    out << "    \"avg_wait\": " << metrics.avg_wait_time_min << ",\n";
+    out << "    \"max_wait\": " << metrics.max_wait_time_min << ",\n";
+    out << "    \"avg_in_vehicle\": " << metrics.avg_in_vehicle_time_min << ",\n";
+    out << "    \"avg_total_trip\": " << metrics.avg_total_trip_time_min << "\n";
+    out << "  },\n";
+
+    // Distance & efficiency
+    out << "  \"distance_km\": {\n";
+    out << "    \"total_vmt\": " << metrics.total_vmt_km << ",\n";
+    out << "    \"loaded_vmt\": " << metrics.loaded_vmt_km << ",\n";
+    out << "    \"empty_vmt\": " << metrics.empty_vmt_km << ",\n";
+    out << "    \"empty_ratio_pct\": " << metrics.empty_ratio << ",\n";
+    out << "    \"avg_per_trip\": " << metrics.avg_distance_per_trip_km << ",\n";
+    out << "    \"passenger_km\": " << metrics.total_passenger_km << ",\n";
+    out << "    \"avg_detour_ratio\": " << metrics.avg_detour_ratio << "\n";
+    out << "  },\n";
+
+    // Sharing & occupancy
+    out << "  \"sharing\": {\n";
+    out << "    \"total_trips\": " << metrics.total_vehicle_trips << ",\n";
+    out << "    \"avg_passengers_per_trip\": " << metrics.avg_passengers_per_trip << ",\n";
+    out << "    \"solo_trips\": " << metrics.solo_trips << ",\n";
+    out << "    \"shared_trips\": " << metrics.shared_trips << ",\n";
+    out << "    \"pooling_rate_pct\": " << metrics.pooling_rate << ",\n";
+    out << "    \"avg_occupancy\": " << metrics.avg_vehicle_occupancy << "\n";
+    out << "  },\n";
+
+    // Fleet utilization
+    out << "  \"fleet\": {\n";
+    out << "    \"vehicles_used\": " << metrics.vehicles_used << ",\n";
+    out << "    \"vehicles_idle\": " << metrics.vehicles_idle << "\n";
+    out << "  },\n";
+
+    // Fuel & emissions
+    out << "  \"fuel_emissions\": {\n";
+    out << "    \"total_fuel_liters\": " << metrics.total_fuel_liters << ",\n";
+    out << "    \"fuel_per_100km\": " << metrics.fuel_per_km << ",\n";
+    out << "    \"total_co2_kg\": " << metrics.total_co2_kg << ",\n";
+    out << "    \"co2_g_per_pax_km\": " << metrics.co2_per_passenger_km << "\n";
+    out << "  },\n";
+
+    // Per-vehicle-type breakdown
     out << "  \"per_vehicle_type\": {\n";
     bool first_type = true;
-    for (const auto& [type, vtm] : m.per_vehicle_type)
+    for (const auto& [vtype, vmetrics] : metrics.per_vehicle_type)
     {
         if (!first_type) out << ",\n";
         first_type = false;
 
-        out << "    \"" << type << "\": {\n";
-        out << "      \"vehicles_used\": " << vtm.vehicles_used << ",\n";
-        out << "      \"total_trips\": " << vtm.total_trips << ",\n";
-        out << "      \"passengers_carried\": " << vtm.passengers_carried << ",\n";
-        out << "      \"avg_occupancy\": " << vtm.avg_occupancy << ",\n";
-        out << "      \"total_vmt_km\": " << vtm.total_vmt_km << ",\n";
-        out << "      \"loaded_vmt_km\": " << vtm.loaded_vmt_km << ",\n";
-        out << "      \"empty_vmt_km\": " << vtm.empty_vmt_km << ",\n";
-        out << "      \"empty_ratio\": " << vtm.empty_ratio << "\n";
+        out << "    \"" << vtype << "\": {\n";
+        out << "      \"vehicles_used\": " << vmetrics.vehicles_used << ",\n";
+        out << "      \"total_trips\": " << vmetrics.total_trips << ",\n";
+        out << "      \"passengers_carried\": " << vmetrics.passengers_carried << ",\n";
+        out << "      \"avg_occupancy\": " << vmetrics.avg_occupancy << ",\n";
+        out << "      \"total_vmt_km\": " << vmetrics.total_vmt_km << ",\n";
+        out << "      \"loaded_vmt_km\": " << vmetrics.loaded_vmt_km << ",\n";
+        out << "      \"empty_vmt_km\": " << vmetrics.empty_vmt_km << ",\n";
+        out << "      \"empty_ratio_pct\": " << vmetrics.empty_ratio << "\n";
         out << "    }";
     }
-    out << "\n  },\n";
+    out << "\n  }\n";
 
-    // NEW: Fuel & Emissions (placeholder for now)
-    out << "  \"fuel_emissions\": {\n";
-    out << "    \"total_fuel_liters\": " << m.total_fuel_liters << ",\n";
-    out << "    \"fuel_per_km\": " << m.fuel_per_km << ",\n";
-    out << "    \"total_co2_kg\": " << m.total_co2_kg << ",\n";
-    out << "    \"co2_per_passenger_km\": " << m.co2_per_passenger_km << "\n";
-    out << "  }\n";
     out << "}\n";
-
     out.close();
-
-    std::cout << "[metrics] Written to: " << filename << "\n";
 }
 
-void print_metrics_summary(const AVServiceMetrics& m)
+void print_metrics_summary(const AVServiceMetrics& metrics)
 {
-    std::cout << "\n╔════════════════════════════════════════════╗\n";
+    std::cout << "\n";
+    std::cout << "╔════════════════════════════════════════════╗\n";
     std::cout << "║     AV FIRST-MILE SERVICE METRICS          ║\n";
-    std::cout << "╚════════════════════════════════════════════╝\n\n";
+    std::cout << "╚════════════════════════════════════════════╝\n";
+    std::cout << "\n";
 
-    std::cout << std::fixed << std::setprecision(2);
-
+    // Coverage
     std::cout << "📊 COVERAGE\n";
-    std::cout << "  Total Requests:      " << m.total_commuters << "\n";
-    std::cout << "  Served:              " << m.served_commuters << "\n";
-    std::cout << "  Unserved:            " << m.unserved_commuters << "\n";
-    std::cout << "  Service Rate:        " << (m.service_rate * 100) << "%\n\n";
+    std::cout << "  Total Requests:      " << metrics.total_commuters << "\n";
+    std::cout << "  Served:              " << metrics.served_commuters << "\n";
+    std::cout << "  Unserved:            " << metrics.unserved_commuters << "\n";
+    std::cout << "  Service Rate:        " << std::fixed << std::setprecision(2)
+              << (metrics.service_rate * 100.0) << "%\n\n";
 
+    // Time performance
     std::cout << "⏱️  TIME PERFORMANCE\n";
-    std::cout << "  Avg Wait Time:       " << m.avg_wait_time_min << " min\n";
-    std::cout << "  Max Wait Time:       " << m.max_wait_time_min << " min\n";
-    std::cout << "  Avg In-Vehicle:      " << m.avg_in_vehicle_time_min << " min\n";
-    std::cout << "  Avg Total Trip:      " << m.avg_total_trip_time_min << " min\n\n";
+    std::cout << "  Avg Wait Time:       " << std::fixed << std::setprecision(2)
+              << metrics.avg_wait_time_min << " min\n";
+    std::cout << "  Max Wait Time:       " << metrics.max_wait_time_min << " min\n";
+    std::cout << "  Avg In-Vehicle:      " << metrics.avg_in_vehicle_time_min << " min\n";
+    std::cout << "  Avg Total Trip:      " << metrics.avg_total_trip_time_min << " min\n\n";
 
+    // Distance & efficiency
     std::cout << "🚗 DISTANCE & EFFICIENCY\n";
-    std::cout << "  Total VMT:           " << m.total_vmt_km << " km\n";
-    std::cout << "  Loaded VMT:          " << m.loaded_vmt_km << " km ("
-              << ((1.0 - m.empty_ratio) * 100) << "%)\n";
-    std::cout << "  Empty VMT:           " << m.empty_vmt_km << " km ("
-              << (m.empty_ratio * 100) << "%)\n";
-    std::cout << "  Avg Detour Ratio:    " << m.avg_detour_ratio << "x\n";
-    std::cout << "  Passenger-km:        " << m.total_passenger_km << " km\n\n";
+    std::cout << "  Total VMT:           " << metrics.total_vmt_km << " km\n";
+    std::cout << "  Loaded VMT:          " << metrics.loaded_vmt_km << " km ("
+              << std::setprecision(2) << ((metrics.total_vmt_km > 0) ? (metrics.loaded_vmt_km / metrics.total_vmt_km * 100.0) : 0.0)
+              << "%)\n";
+    std::cout << "  Empty VMT:           " << metrics.empty_vmt_km << " km ("
+              << std::setprecision(2) << metrics.empty_ratio << "%)\n";
+    std::cout << "  Avg Detour Ratio:    " << std::setprecision(2) << metrics.avg_detour_ratio << "x\n";
+    std::cout << "  Passenger-km:        " << metrics.total_passenger_km << " km\n\n";
 
+    // Sharing & occupancy
     std::cout << "👥 SHARING & OCCUPANCY\n";
-    std::cout << "  Vehicle Trips:       " << m.total_vehicle_trips << "\n";
-    std::cout << "  Avg Passengers/Trip: " << m.avg_passengers_per_trip << "\n";
-    std::cout << "  Solo Trips:          " << m.solo_trips << " ("
-              << ((1.0 - m.pooling_rate) * 100) << "%)\n";
-    std::cout << "  Shared Trips:        " << m.shared_trips << " ("
-              << (m.pooling_rate * 100) << "%)\n";
-    std::cout << "  Avg Occupancy:       " << m.avg_vehicle_occupancy << " (distance-weighted)\n\n";
+    std::cout << "  Vehicle Trips:       " << metrics.total_vehicle_trips << "\n";
+    std::cout << "  Avg Passengers/Trip: " << std::fixed << std::setprecision(2)
+              << metrics.avg_passengers_per_trip << "\n";
+    std::cout << "  Solo Trips:          " << metrics.solo_trips << " ("
+              << std::setprecision(2) << ((metrics.total_vehicle_trips > 0) ? (metrics.solo_trips * 100.0 / metrics.total_vehicle_trips) : 0.0)
+              << "%)\n";
+    std::cout << "  Shared Trips:        " << metrics.shared_trips << " ("
+              << std::setprecision(2) << metrics.pooling_rate << "%)\n";
+    std::cout << "  Avg Occupancy:       " << std::setprecision(2)
+              << metrics.avg_vehicle_occupancy << " (distance-weighted)\n\n";
 
+    // Fleet utilization
     std::cout << "🚙 FLEET UTILIZATION\n";
-    std::cout << "  Vehicles Used:       " << m.vehicles_used << "\n";
-    std::cout << "  Vehicles Idle:       " << m.vehicles_idle << "\n\n";
+    std::cout << "  Vehicles Used:       " << metrics.vehicles_used << "\n";
+    std::cout << "  Vehicles Idle:       " << metrics.vehicles_idle << "\n\n";
 
-    // NEW: Fuel & Emissions
+    // Fuel & emissions
     std::cout << "⛽ FUEL & EMISSIONS\n";
-    std::cout << "  Total Fuel:          " << m.total_fuel_liters << " L\n";
-    std::cout << "  Fuel Efficiency:     " << (m.fuel_per_km * 100) << " L/100km\n";
-    std::cout << "  Total CO₂:           " << m.total_co2_kg << " kg\n";
-    std::cout << "  CO₂ per pax-km:      " << (m.co2_per_passenger_km * 1000) << " g/pax-km\n\n";
+    std::cout << "  Total Fuel:          " << std::fixed << std::setprecision(2)
+              << metrics.total_fuel_liters << " L\n";
+    std::cout << "  Fuel Efficiency:     " << metrics.fuel_per_km << " L/100km\n";
+    std::cout << "  Total CO₂:           " << metrics.total_co2_kg << " kg\n";
+    std::cout << "  CO₂ per pax-km:      " << std::setprecision(2)
+              << metrics.co2_per_passenger_km << " g/pax-km\n\n";
 
     // Per-vehicle-type breakdown
-    if (!m.per_vehicle_type.empty())
+    std::cout << "🚕 PER-VEHICLE-TYPE BREAKDOWN\n";
+    for (const auto& [vtype, vmetrics] : metrics.per_vehicle_type)
     {
-        std::cout << "🚕 PER-VEHICLE-TYPE BREAKDOWN\n";
-        for (const auto& [type, vtm] : m.per_vehicle_type)
-        {
-            if (vtm.vehicles_used > 0)
-            {
-                std::cout << "  " << type << ":\n";
-                std::cout << "    Vehicles Used:     " << vtm.vehicles_used << "\n";
-                std::cout << "    Trips:             " << vtm.total_trips << "\n";
-                std::cout << "    Passengers:        " << vtm.passengers_carried << "\n";
-                std::cout << "    Avg Occupancy:     " << vtm.avg_occupancy << "\n";
-                std::cout << "    VMT:               " << vtm.total_vmt_km << " km\n";
-                std::cout << "    Empty Ratio:       " << (vtm.empty_ratio * 100) << "%\n\n";
-            }
-        }
+        if (vmetrics.vehicles_used == 0) continue;
+
+        std::cout << "  " << vtype << ":\n";
+        std::cout << "    Vehicles Used:     " << vmetrics.vehicles_used << "\n";
+        std::cout << "    Trips:             " << vmetrics.total_trips << "\n";
+        std::cout << "    Passengers:        " << vmetrics.passengers_carried << "\n";
+        std::cout << "    Avg Occupancy:     " << std::fixed << std::setprecision(2)
+                  << vmetrics.avg_occupancy << "\n";
+        std::cout << "    VMT:               " << vmetrics.total_vmt_km << " km\n";
+        std::cout << "    Empty Ratio:       " << std::setprecision(2)
+                  << vmetrics.empty_ratio << "%\n";
+        std::cout << "\n";
     }
+
+    std::cout << "[metrics] Written to: console " << "\n";
 }

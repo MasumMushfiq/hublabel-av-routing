@@ -162,7 +162,7 @@ static void setup_vehicle_costs(
         int64_t fixed_cost = 0;
 
         if (vehicles[v].type == "Bus")
-            fixed_cost = 10000000;
+            fixed_cost = 1000000;
         else if (vehicles[v].type == "Car")
             fixed_cost = 500000;
         else if (vehicles[v].type == "Moped")
@@ -322,6 +322,23 @@ static std::vector<int64_t> setup_time_windows(
     return travel_to_station_ms;
 }
 
+int64_t compute_disjunction_penalty(
+    const std::vector<int>& commuter_nodes,
+    int station_node,
+    const QueryPathFn& query_path)
+{
+    int64_t sum_distances = 0;
+    for (size_t i = 0; i < commuter_nodes.size(); ++i)
+    {
+        std::vector<int> leg;
+        int d_mm = query_path(commuter_nodes[i], station_node, leg);
+        if (d_mm > 0) sum_distances += d_mm;
+    }
+
+    return (sum_distances > 0) ? sum_distances : 10000000000LL;
+}
+
+
 // Add disjunctions for partial solutions
 static void add_disjunctions(
     RoutingModel& routing,
@@ -343,7 +360,9 @@ static void add_disjunctions(
             if (d_mm > 0) sum_distances += d_mm;
         }
 
-        const int64_t penalty = (sum_distances > 0) ? sum_distances : 10000000000LL;
+        const int64_t penalty = compute_disjunction_penalty(
+            commuter_nodes, station_node, query_path
+        );
 
         std::cerr << "[cvrp] PARTIAL SOLUTIONS ENABLED - customers optional with penalty="
             << penalty << " mm\n";
@@ -585,7 +604,7 @@ static void write_output_files(
 // MAIN FUNCTION: CVRP with Time Windows (MODULARIZED - FIXED)
 // ═══════════════════════════════════════════════════════════════════════════
 
-bool solve_cvrp_distance(
+CVRPSolution solve_cvrp_distance_with_metrics(
     const std::vector<int>& commuter_nodes,
     int station_node,
     const std::vector<OrToolsVehicle>& vehicles,
@@ -599,11 +618,17 @@ bool solve_cvrp_distance(
 {
     using operations_research::LocalSearchMetaheuristic;
 
+    CVRPSolution result;
+    result.success = false;
+    result.solution = nullptr;
+    result.routing = nullptr;
+    result.manager = nullptr;
+
     const int N = static_cast<int>(commuter_nodes.size());
     if (N == 0 || vehicles.empty())
     {
         std::cerr << "[cvrp] nothing to solve (no customers or no vehicles)\n";
-        return false;
+        return result;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -627,9 +652,7 @@ bool solve_cvrp_distance(
     // ═══════════════════════════════════════════════════════════════════════
 
     setup_vehicle_costs(routing, manager, vehicles, query_path, station_node, commuter_nodes, depot_m);
-
     add_capacity_dimension(routing, manager, vehicles, depot_m);
-
     add_time_dimension(routing, manager, query_path, edge_tbl, vehicles, station_node, commuter_nodes, depot_m);
 
     std::vector<int64_t> travel_to_station_ms = setup_time_windows(
@@ -653,7 +676,7 @@ bool solve_cvrp_distance(
     if (!solution)
     {
         std::cerr << "[cvrp] no solution found.\n";
-        return false;
+        return result;
     }
 
     std::cerr << "[cvrp] Solution found! Total distance: "
@@ -664,47 +687,61 @@ bool solve_cvrp_distance(
     // ═══════════════════════════════════════════════════════════════════════
 
     print_vehicle_usage(routing, solution, manager, vehicles, N);
-
     std::vector<bool> served = analyze_service_coverage(routing, solution, manager, N);
-
     print_route_diagnostics(routing, solution, manager, vehicles, station_node, commuter_nodes, depot_m);
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 5. Calculate metrics and write outputs
+    // 5. Calculate metrics (return to caller, don't write here)
     // ═══════════════════════════════════════════════════════════════════════
 
-    auto metrics = calculate_av_metrics(
+    result.metrics = calculate_av_metrics(
         commuter_nodes, station_node, vehicles,
         query_path, edge_tbl, routing, solution, manager, pickup_earliest_ms
     );
 
-    std::string metrics_file = assignments_csv + ".metrics.json";
-    write_metrics_json(metrics, metrics_file);
-    print_metrics_summary(metrics);
-    std::cerr << "[cvrp] Metrics written to: " << metrics_file << "\n";
+    // ═══════════════════════════════════════════════════════════════════════
+    // 6. Write output files
+    // ═══════════════════════════════════════════════════════════════════════
 
     write_output_files(
         routing, solution, manager, vehicles, query_path,
         station_node, commuter_nodes, served, assignments_csv, av_routes_csv, depot_m
     );
 
-    return true;
+    result.success = true;
+    result.solution = solution;
+    result.routing = &routing;
+    result.manager = &manager;
+
+    return result;
 }
 
-// Backward-compatible wrapper without time windows
+// Backward-compatible wrapper - writes metrics internally
 bool solve_cvrp_distance(
     const std::vector<int>& commuter_nodes,
     int station_node,
     const std::vector<OrToolsVehicle>& vehicles,
     const QueryPathFn& query_path,
     const std::unordered_map<EdgeKey, EdgeAttr>& edge_tbl,
+    const std::vector<int64_t>& pickup_earliest_ms,
+    const std::vector<int64_t>& dropoff_latest_ms,
     const std::string& assignments_csv,
     const std::string& av_routes_csv,
     const OrToolsConfig& cfg)
 {
-    std::vector<int64_t> empty_earliest, empty_latest;
-    return solve_cvrp_distance(commuter_nodes, station_node, vehicles,
-                               query_path, edge_tbl,
-                               empty_earliest, empty_latest,
-                               assignments_csv, av_routes_csv, cfg);
+    auto result = solve_cvrp_distance_with_metrics(
+        commuter_nodes, station_node, vehicles, query_path, edge_tbl,
+        pickup_earliest_ms, dropoff_latest_ms, assignments_csv, av_routes_csv, cfg
+    );
+
+    if (result.success)
+    {
+        // Write metrics for backward compatibility
+        std::string metrics_file = assignments_csv + ".metrics.json";
+        write_metrics_json(result.metrics, metrics_file);
+        print_metrics_summary(result.metrics);
+        std::cerr << "[cvrp] Metrics written to: " << metrics_file << "\n";
+    }
+
+    return result.success;
 }

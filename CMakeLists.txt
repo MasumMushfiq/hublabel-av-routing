@@ -122,6 +122,11 @@ set(PLANNER_SRC
         planner/time_cost.cpp
 )
 
+set(ANALYSIS_SRC
+        planner/baseline_calculator.cpp
+        planner/comparison_utility.cpp
+)
+
 # --- existing executables (unchanged) ---
 add_executable(construct ${SRC} construct.cpp)
 add_executable(testing_hublabeling ${SRC} testing_hublabeling.cpp)
@@ -186,6 +191,7 @@ link_directories(
 add_executable(simulate_first_mile_ortools
         ${SRC}
         ${PLANNER_SRC}
+        ${ANALYSIS_SRC}
         planner/ortools_solver.cpp
         planner/av_metrics.cpp
         simulate_first_mile_ortools.cpp

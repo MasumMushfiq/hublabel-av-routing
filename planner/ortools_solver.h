@@ -16,7 +16,7 @@
 #include "ortools/constraint_solver/routing_parameters.h"
 
 #include "edge_attrs.h"
-#include "av_selection.h"
+#include "av_metrics.h"
 
 // QueryPathFn signature you already use elsewhere:
 //   int query_path(int s, int t, std::vector<int>& out_path);
@@ -35,13 +35,23 @@ struct OrToolsVehicle {
     double max_speed_kmph = 60.0; // default
 };
 
+struct CVRPSolution {
+    bool success;
+    AVServiceMetrics metrics;
+    const operations_research::Assignment* solution;
+    const operations_research::RoutingModel* routing;
+    const operations_research::RoutingIndexManager* manager;
+};
 
-bool solve_cvrp_distance(
+
+CVRPSolution solve_cvrp_distance_with_metrics(
     const std::vector<int>& commuter_nodes,
     int station_node,
     const std::vector<OrToolsVehicle>& vehicles,
     const QueryPathFn& query_path,
-    const std::unordered_map<EdgeKey, EdgeAttr>& /*edge_tbl*/, // kept for signature parity
+    const std::unordered_map<EdgeKey, EdgeAttr>& edge_tbl,
+    const std::vector<int64_t>& pickup_earliest_ms,
+    const std::vector<int64_t>& dropoff_latest_ms,
     const std::string& assignments_csv,
     const std::string& av_routes_csv,
     const OrToolsConfig& cfg);
