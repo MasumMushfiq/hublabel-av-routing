@@ -133,6 +133,7 @@ add_executable(construct ${SRC} construct.cpp)
 add_executable(testing_hublabeling ${SRC} testing_hublabeling.cpp)
 add_executable(testing_graph ${SRC} testing_graph.cpp)
 add_executable(simulate_first_mile ${SRC} ${PLANNER_SRC} simulate_first_mile.cpp)
+add_executable(build_commuters_reachable ${SRC} ${PLANNER_SRC} build_commuters_reachable.cpp)
 
 # --- OpenMP from Homebrew, same logic (unchanged) ---
 find_library(omp_lib omp "/opt/homebrew/opt")
@@ -140,6 +141,7 @@ if (omp_lib)
     target_link_libraries(testing_hublabeling  ${omp_lib})
     target_link_libraries(testing_graph        ${omp_lib})
     target_link_libraries(simulate_first_mile  ${omp_lib})
+    target_link_libraries(build_commuters_reachable ${omp_lib})
 endif()
 
 # --- Threads / Zlib (unchanged) ---
@@ -150,6 +152,7 @@ target_link_libraries(construct        ZLIB::ZLIB Threads::Threads)
 target_link_libraries(testing_hublabeling ZLIB::ZLIB Threads::Threads)
 target_link_libraries(testing_graph    ZLIB::ZLIB Threads::Threads)
 target_link_libraries(simulate_first_mile ZLIB::ZLIB Threads::Threads)
+target_link_libraries(build_commuters_reachable ZLIB::ZLIB Threads::Threads)
 
 # =====================================================================
 # --- OR-Tools: use local source+build (no find_package) ---

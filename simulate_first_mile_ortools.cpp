@@ -23,7 +23,8 @@
 std::vector<AVType> to_av_types(const std::vector<VehicleConfig>& configs)
 {
     std::vector<AVType> av_types;
-    for (const auto& vc : configs) {
+    for (const auto& vc : configs)
+    {
         AVType av;
         av.name = vc.name;
         av.max_speed_kmph = vc.max_speed_kmph;
@@ -40,8 +41,10 @@ std::vector<AVType> to_av_types(const std::vector<VehicleConfig>& configs)
 std::vector<OrToolsVehicle> to_ortools_vehicles(const std::vector<VehicleConfig>& configs)
 {
     std::vector<OrToolsVehicle> vehicles;
-    for (const auto& vc : configs) {
-        for (int i = 0; i < vc.fleet_size; ++i) {
+    for (const auto& vc : configs)
+    {
+        for (int i = 0; i < vc.fleet_size; ++i)
+        {
             OrToolsVehicle v;
             v.type = vc.name;
             v.capacity = vc.capacity;
@@ -57,8 +60,10 @@ FuelParameters get_fuel_parameters_from_config(
     const std::string& vehicle_type,
     const std::vector<VehicleConfig>& configs)
 {
-    for (const auto& vc : configs) {
-        if (vc.name == vehicle_type) {
+    for (const auto& vc : configs)
+    {
+        if (vc.name == vehicle_type)
+        {
             return FuelParameters{
                 vc.fuel_l_per_100km,
                 vc.co2_kg_per_liter
@@ -72,11 +77,12 @@ FuelParameters get_fuel_parameters_from_config(
 
 int main(int argc, char* argv[])
 {
-    if (argc != 8)  // ADD ONE MORE ARGUMENT
+    if (argc != 11) // NOW 10 ARGUMENTS + PROGRAM NAME = 11
     {
         std::cerr << "Usage: " << argv[0] << "\n"
-            << "  commuters.csv stations.csv dist_label_prefix speed_table.txt "
-            << "assignments.csv av_routes.csv config.json\n";
+            << "  commuters.csv stations.csv dist_label_prefix speed_table.txt\n"
+            << "  assignments.csv av_routes.csv config.json\n"
+            << "  baseline.json metrics.json comparison.json\n";
         return 1;
     }
 
@@ -86,8 +92,10 @@ int main(int argc, char* argv[])
     const std::string speed_table = argv[4];
     const std::string assignments = argv[5];
     const std::string av_routes_out = argv[6];
-    const std::string config_file = argv[7];  // NEW
-
+    const std::string config_file = argv[7];
+    const std::string baseline_json = argv[8]; // NEW
+    const std::string metrics_json = argv[9]; // NEW
+    const std::string comparison_json = argv[10]; // NEW
 
     // ═══════════════════════════════════════════════════════════════════════
     // 1. Load inputs
@@ -136,55 +144,46 @@ int main(int argc, char* argv[])
     std::vector<Commuter> reachable_commuters;
     std::vector<int> unreachable_indices;
 
-    for (size_t i = 0; i < commuters.size(); ++i) {
+    for (size_t i = 0; i < commuters.size(); ++i)
+    {
         std::vector<int> path;
         int dist = query_path(commuters[i].origin_node, station_node, path);
 
-        if (dist > 0 && !path.empty()) {
+        if (dist > 0 && !path.empty())
+        {
             reachable_commuters.push_back(commuters[i]);
-        } else {
+        }
+        else
+        {
             unreachable_indices.push_back(i);
             std::cerr << "⚠️  Commuter " << i << " (node " << commuters[i].origin_node
-                      << ") is unreachable from station " << station_node << "\n";
+                << ") is unreachable from station " << station_node << "\n";
         }
     }
 
-    if (!unreachable_indices.empty()) {
+    if (!unreachable_indices.empty())
+    {
         std::cout << "\n🚫 Filtered out " << unreachable_indices.size()
-                  << " unreachable commuter(s)\n";
+            << " unreachable commuter(s)\n";
         std::cout << "✓ Proceeding with " << reachable_commuters.size()
-                  << " reachable commuter(s)\n\n";
-    } else {
+            << " reachable commuter(s)\n\n";
+    }
+    else
+    {
         std::cout << "✓ All " << original_count << " commuters are reachable\n\n";
     }
 
     // Replace commuters with filtered list
     commuters = reachable_commuters;
 
-    if (commuters.empty()) {
+    if (commuters.empty())
+    {
         std::cerr << "❌ No reachable commuters remaining. Exiting.\n";
         return 5;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // 3. Setup vehicles and time windows (using filtered commuters)
-    // ═══════════════════════════════════════════════════════════════════════
+    // std::vector<OrToolsVehicle> vehicles = to_ortools_vehicles(exp_config.vehicle_types);
 
-    // std::vector<AVType> types = default_av_types();
-    // std::vector<OrToolsVehicle> vehicles;
-    // for (const auto& t : types)
-    // {
-    //     for (int k = 0; k < t.fleet_size; ++k)
-    //     {
-    //         vehicles.push_back(OrToolsVehicle{t.name, t.capacity, t.max_speed_kmph});
-    //     }
-    // }
-    // if (vehicles.empty())
-    // {
-    //     vehicles.push_back(OrToolsVehicle{"Car", 4, 60.0});
-    // }
-
-    std::vector<OrToolsVehicle> vehicles = to_ortools_vehicles(exp_config.vehicle_types);
 
 
     std::vector<int> commuter_nodes;
@@ -201,32 +200,134 @@ int main(int argc, char* argv[])
     for (const auto& c : commuters)
         dropoff_latest_ms.push_back(c.tw.drop_off_latest_min * 60LL * 1000LL);
 
-    OrToolsConfig cfg;
-    cfg.time_limit_seconds = 30;
-    cfg.log_search = false;
-    cfg.allow_partial_solution = true;
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // 4. CALCULATE BASELINE (only for reachable commuters)
-    // ═══════════════════════════════════════════════════════════════════════
-
-    std::cout << "\n";
-    std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
-    std::cout << "║            CALCULATING PRIVATE VEHICLE BASELINE                ║\n";
-    std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
-
-    PrivateVehicleBaseline baseline = calculate_private_vehicle_baseline(
-        commuter_nodes,
-        station_node,
-        query_path,
-        edge_tbl,
-        original_count  // Pass original count for reporting
+    // Estimate max trips needed
+    int max_trips = estimate_max_trips_per_vehicle(
+        pickup_earliest_ms,
+        dropoff_latest_ms,
+        20.0  // Assume 20 min average trip time (adjust based on your scenario)
     );
-    print_baseline_summary(baseline);
-    write_baseline_json(baseline, "files/outputs/baseline.json");
+
+    // Create multi-trip virtual vehicles
+    std::vector<OrToolsVehicle> vehicles = create_multi_trip_vehicles(
+        exp_config.vehicle_types,
+        max_trips
+    );
+
+    OrToolsConfig cfg;
+    cfg.time_limit_seconds = exp_config.solver.time_limit_seconds;
+    cfg.log_search = exp_config.solver.log_search;
+    cfg.allow_partial_solution = exp_config.solver.allow_partial_solution;
+
+
+std::cout << "\n";
+std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
+std::cout << "║           VALIDATING TIME WINDOW FEASIBILITY                   ║\n";
+std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
+
+// Calculate max vehicle speed
+double max_speed_kmph = 0.0;
+for (const auto& v : vehicles) {
+    max_speed_kmph = std::max(max_speed_kmph, static_cast<double>(v.max_speed_kmph));
+}
+
+std::vector<bool> time_feasible(commuters.size(), true);
+int time_infeasible_count = 0;
+
+for (size_t i = 0; i < commuters.size(); ++i) {
+    std::vector<int> path;
+    int dist_mm = query_path(commuters[i].origin_node, station_node, path);
+
+    if (dist_mm <= 0 || path.empty()) {
+        // Already filtered out in reachability check, shouldn't happen
+        time_feasible[i] = false;
+        time_infeasible_count++;
+        continue;
+    }
+
+    // Calculate travel time (simplified - you can use time_ms_along_path for accuracy)
+    double dist_km = dist_mm / 1e6;
+    int64_t travel_time_ms = static_cast<int64_t>((dist_km / max_speed_kmph) * 3600.0 * 1000.0);
+
+    // Check if time window is feasible
+    int64_t earliest_pickup_ms = commuters[i].tw.pickup_earliest_min * 60LL * 1000LL;
+    int64_t latest_dropoff_ms = commuters[i].tw.drop_off_latest_min * 60LL * 1000LL;
+    int64_t latest_pickup_ms = latest_dropoff_ms - travel_time_ms;
+
+    if (latest_pickup_ms < earliest_pickup_ms) {
+        time_feasible[i] = false;
+        time_infeasible_count++;
+
+        std::cerr << "⚠️  Commuter " << i << " (node " << commuters[i].origin_node
+                  << ") has INFEASIBLE time window:\n";
+        std::cerr << "    Pickup earliest: " << commuters[i].tw.pickup_earliest_min << " min\n";
+        std::cerr << "    Dropoff latest:  " << commuters[i].tw.drop_off_latest_min << " min\n";
+        std::cerr << "    Travel time:     " << (travel_time_ms / 60000.0) << " min\n";
+        std::cerr << "    Window duration: " << ((latest_dropoff_ms - earliest_pickup_ms) / 60000.0) << " min\n";
+        std::cerr << "    Shortfall:       " << ((earliest_pickup_ms - latest_pickup_ms) / 60000.0) << " min\n";
+    }
+}
+
+// Store counts before filtering
+int original_count_all = original_count; // This already includes unreachable from earlier
+int reachable_before_time_check = commuters.size();
+
+if (time_infeasible_count > 0) {
+    std::cout << "\n🚫 Filtered out " << time_infeasible_count
+              << " time-infeasible commuter(s)\n";
+    std::cout << "✓ Proceeding with " << (commuters.size() - time_infeasible_count)
+              << " time-feasible commuter(s)\n\n";
+
+    // Filter in-place (same pattern as reachability check)
+    std::vector<Commuter> time_feasible_commuters;
+    std::vector<int> time_feasible_nodes;
+    std::vector<int64_t> time_feasible_pickup_earliest;
+    std::vector<int64_t> time_feasible_dropoff_latest;
+
+    for (size_t i = 0; i < commuters.size(); ++i) {
+        if (time_feasible[i]) {
+            time_feasible_commuters.push_back(commuters[i]);
+            time_feasible_nodes.push_back(commuter_nodes[i]);
+            time_feasible_pickup_earliest.push_back(pickup_earliest_ms[i]);
+            time_feasible_dropoff_latest.push_back(dropoff_latest_ms[i]);
+        }
+    }
+
+    // Replace with filtered lists
+    commuters = time_feasible_commuters;
+    commuter_nodes = time_feasible_nodes;
+    pickup_earliest_ms = time_feasible_pickup_earliest;
+    dropoff_latest_ms = time_feasible_dropoff_latest;
+} else {
+    std::cout << "✓ All " << commuters.size()
+              << " commuters have feasible time windows\n\n";
+}
+
+if (commuters.empty()) {
+    std::cerr << "❌ No time-feasible commuters remaining. Exiting.\n";
+    return 5;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 3. CALCULATE BASELINE (only for time-feasible commuters)
+// ═══════════════════════════════════════════════════════════════════════
+
+std::cout << "\n";
+std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
+std::cout << "║            CALCULATING PRIVATE VEHICLE BASELINE                ║\n";
+std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
+
+PrivateVehicleBaseline baseline = calculate_private_vehicle_baseline(
+    commuter_nodes,
+    station_node,
+    query_path,
+    edge_tbl,
+    original_count_all  // Pass original count (includes unreachable + time-infeasible)
+);
+print_baseline_summary(baseline);
+write_baseline_json(baseline, baseline_json);
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 5. RUN AV OPTIMIZATION
+    // 4. RUN AV OPTIMIZATION (Two-stage on time-feasible commuters)
     // ═══════════════════════════════════════════════════════════════════════
 
     std::cout << "\n";
@@ -234,7 +335,45 @@ int main(int argc, char* argv[])
     std::cout << "║                RUNNING AV OPTIMIZATION                         ║\n";
     std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // STAGE 1: Attempt full coverage on time-feasible commuters
+    // ═══════════════════════════════════════════════════════════════════════
+
+    std::cout << "\n[STAGE 1] Attempting full service coverage on "
+        << commuters.size() << " time-feasible commuters...\n";
+
+    ExperimentConfig stage1_config = exp_config;
+    stage1_config.solver.allow_partial_solution = false;
+    stage1_config.solver.time_limit_seconds = 10;
+
     CVRPSolution av_result = solve_cvrp_distance_with_metrics(
+        commuter_nodes,
+        station_node,
+        vehicles,
+        query_path,
+        edge_tbl,
+        pickup_earliest_ms,
+        dropoff_latest_ms,
+        assignments,
+        av_routes_out,
+        stage1_config
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STAGE 2: If full coverage failed, try partial on time-feasible commuters
+    // ═══════════════════════════════════════════════════════════════════════
+
+    if (!av_result.success)
+    {
+        std::cout << "\n⚠️  Full coverage not found in "
+            << stage1_config.solver.time_limit_seconds << "s\n";
+        std::cout << "[STAGE 2] Trying partial service on time-feasible commuters...\n";
+
+        ExperimentConfig stage2_config = exp_config;
+        stage2_config.solver.allow_partial_solution = true;
+        stage2_config.solver.time_limit_seconds = 30;
+
+        av_result = solve_cvrp_distance_with_metrics(
             commuter_nodes,
             station_node,
             vehicles,
@@ -244,12 +383,30 @@ int main(int argc, char* argv[])
             dropoff_latest_ms,
             assignments,
             av_routes_out,
-            exp_config  // ONLY PASS THIS (contains solver settings too)
+            stage2_config
         );
+
+        if (av_result.success)
+        {
+            int served = av_result.metrics.served_commuters;
+            int attempted = commuters.size();
+
+            std::cout << "\n✓ Partial solution found:\n";
+            std::cout << "  Served: " << served << "/" << attempted
+                << " time-feasible commuters\n";
+            std::cout << "  Unserved: " << (attempted - served)
+                << " (infeasible due to other constraints)\n";
+        }
+    }
+    else
+    {
+        std::cout << "\n✓ Full coverage achieved! All " << commuters.size()
+            << " time-feasible commuters served.\n";
+    }
 
     if (!av_result.success)
     {
-        std::cerr << "AV optimization failed.\n";
+        std::cerr << "\n❌ No feasible solution found (even with partial service).\n";
         return 6;
     }
 
@@ -257,8 +414,9 @@ int main(int argc, char* argv[])
     std::cout << "  - " << assignments << "\n";
     std::cout << "  - " << av_routes_out << "\n";
 
+
     // ═══════════════════════════════════════════════════════════════════════
-    // 6. PRINT AV METRICS
+    // 5. PRINT AV METRICS
     // ═══════════════════════════════════════════════════════════════════════
 
     std::cout << "\n";
@@ -268,12 +426,11 @@ int main(int argc, char* argv[])
 
     print_metrics_summary(av_result.metrics);
 
-    std::string metrics_file = assignments + ".metrics.json";
-    write_metrics_json(av_result.metrics, metrics_file);
-    std::cout << "✓ AV metrics written to: " << metrics_file << "\n";
+    write_metrics_json(av_result.metrics, metrics_json);
+    std::cout << "✓ AV metrics written to: " << metrics_json << "\n";
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 7. COMPARE AV vs BASELINE
+    // 6. COMPARE AV vs BASELINE
     // ═══════════════════════════════════════════════════════════════════════
 
     std::cout << "\n";
@@ -282,32 +439,49 @@ int main(int argc, char* argv[])
     std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
 
     ComparisonMetrics comparison = compare_av_vs_baseline(
-        "First_Mile_Test",
+        exp_config.experiment_name, // Use experiment name from config
         baseline,
         av_result.metrics
     );
 
     print_comparison_summary(comparison);
-    write_comparison_json(comparison, "files/outputs/comparison.json");
+    write_comparison_json(comparison, comparison_json);
 
     std::cout << "\n";
     std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
     std::cout << "║                    SIMULATION COMPLETE                         ║\n";
     std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
     std::cout << "\nAll outputs:\n";
-    std::cout << "  1. Baseline:    files/baseline.json\n";
-    std::cout << "  2. AV Metrics:  " << metrics_file << "\n";
-    std::cout << "  3. Comparison:  files/comparison.json\n";
+    std::cout << "  1. Baseline:    " << baseline_json << "\n";
+    std::cout << "  2. AV Metrics:  " << metrics_json << "\n";
+    std::cout << "  3. Comparison:  " << comparison_json << "\n";
     std::cout << "  4. Routes:      " << av_routes_out << "\n";
     std::cout << "  5. Assignments: " << assignments << "\n";
 
     // Report filtering summary
-    if (original_count != (int)commuters.size()) {
-        std::cout << "\n📊 Summary:\n";
-        std::cout << "  - Original commuters:   " << original_count << "\n";
-        std::cout << "  - Unreachable:          " << (original_count - commuters.size()) << "\n";
-        std::cout << "  - Analyzed (reachable): " << commuters.size() << "\n";
+    std::cout << "\n";
+    std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
+    std::cout << "║                    SIMULATION COMPLETE                         ║\n";
+    std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
+    std::cout << "\nAll outputs:\n";
+    std::cout << "  1. Baseline:    " << baseline_json << "\n";
+    std::cout << "  2. AV Metrics:  " << metrics_json << "\n";
+    std::cout << "  3. Comparison:  " << comparison_json << "\n";
+    std::cout << "  4. Routes:      " << av_routes_out << "\n";
+    std::cout << "  5. Assignments: " << assignments << "\n";
+
+    // Report filtering summary
+    int unreachable_count = original_count_all - reachable_before_time_check;
+    int total_filtered = unreachable_count + time_infeasible_count;
+
+    if (total_filtered > 0) {
+        std::cout << "\n📊 Filtering Summary:\n";
+        std::cout << "  - Original commuters:      " << original_count_all << "\n";
+        std::cout << "  - Unreachable:             " << unreachable_count << "\n";
+        std::cout << "  - Time-infeasible:         " << time_infeasible_count << "\n";
+        std::cout << "  - Analyzed (feasible):     " << commuters.size() << "\n";
     }
+
 
     return 0;
 }

@@ -111,6 +111,125 @@ static double calculate_vehicle_distance_penalty(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// MULTI-TRIP VEHICLE SUPPORT
+// ═══════════════════════════════════════════════════════════════════════════
+
+int estimate_max_trips_per_vehicle(
+    const std::vector<int64_t>& pickup_earliest_ms,
+    const std::vector<int64_t>& dropoff_latest_ms,
+    double avg_trip_time_minutes)
+{
+    if (pickup_earliest_ms.empty() || dropoff_latest_ms.empty()) {
+        return 1; // Default: single trip
+    }
+
+    // Find the time span of service
+    int64_t earliest = *std::min_element(pickup_earliest_ms.begin(), pickup_earliest_ms.end());
+    int64_t latest = *std::max_element(dropoff_latest_ms.begin(), dropoff_latest_ms.end());
+
+    int64_t time_span_ms = latest - earliest;
+    double time_span_minutes = time_span_ms / (60.0 * 1000.0);
+
+    // Calculate max possible trips
+    int max_trips = std::max(1, static_cast<int>(std::ceil(time_span_minutes / avg_trip_time_minutes)));
+
+    // Cap at reasonable maximum (e.g., 6 trips in a morning commute window)
+    max_trips = std::min(max_trips, 6);
+
+    std::cerr << "[multi-trip] Time span: " << time_span_minutes << " min, "
+              << "avg trip time: " << avg_trip_time_minutes << " min, "
+              << "max trips per vehicle: " << max_trips << "\n";
+
+    return max_trips;
+}
+
+std::vector<OrToolsVehicle> create_multi_trip_vehicles(
+    const std::vector<VehicleConfig>& vehicle_configs,
+    int max_trips_per_vehicle)
+{
+    std::vector<OrToolsVehicle> vehicles;
+
+    std::cerr << "[multi-trip] Creating virtual vehicles with up to "
+              << max_trips_per_vehicle << " trips per physical vehicle\n";
+
+    int physical_id = 0;
+    for (const auto& vc : vehicle_configs) {
+        std::cerr << "[multi-trip]   " << vc.name << ": " << vc.fleet_size
+                  << " physical × " << max_trips_per_vehicle
+                  << " trips = " << (vc.fleet_size * max_trips_per_vehicle)
+                  << " virtual vehicles\n";
+
+        for (int fleet_idx = 0; fleet_idx < vc.fleet_size; ++fleet_idx) {
+            for (int trip = 0; trip < max_trips_per_vehicle; ++trip) {
+                OrToolsVehicle v;
+                v.type = vc.name;
+                v.capacity = vc.capacity;
+                v.max_speed_kmph = vc.max_speed_kmph;
+                v.physical_vehicle_id = physical_id;
+                v.trip_number = trip;
+                vehicles.push_back(v);
+            }
+            physical_id++;
+        }
+    }
+
+    std::cerr << "[multi-trip] Total virtual vehicles: " << vehicles.size() << "\n";
+    return vehicles;
+}
+
+// Add trip sequencing constraints
+static void add_trip_sequencing_constraints(
+    operations_research::RoutingModel& routing,
+    const std::vector<OrToolsVehicle>& vehicles,
+    int64_t turnaround_time_ms = 5 * 60 * 1000) // 5 min default
+{
+    const auto& time_dim = routing.GetDimensionOrDie("Time");
+
+    // Build map: physical_vehicle_id → list of virtual vehicle indices
+    std::map<int, std::vector<int>> phys_to_virtual;
+    for (size_t v = 0; v < vehicles.size(); ++v) {
+        phys_to_virtual[vehicles[v].physical_vehicle_id].push_back(v);
+    }
+
+    std::cerr << "[multi-trip] Adding trip sequencing constraints (turnaround: "
+              << (turnaround_time_ms / 60000.0) << " min)...\n";
+
+    int constraint_count = 0;
+
+    // For each physical vehicle
+    for (const auto& [phys_id, virtual_ids] : phys_to_virtual) {
+        if (virtual_ids.size() <= 1) continue; // No sequencing needed
+
+        // Sort by trip number
+        auto sorted_ids = virtual_ids;
+        std::sort(sorted_ids.begin(), sorted_ids.end(),
+            [&](int a, int b) {
+                return vehicles[a].trip_number < vehicles[b].trip_number;
+            });
+
+        // Add constraints: Trip[i+1].start >= Trip[i].end + turnaround
+        for (size_t i = 0; i + 1 < sorted_ids.size(); ++i) {
+            int prev_v = sorted_ids[i];
+            int curr_v = sorted_ids[i + 1];
+
+            routing.solver()->AddConstraint(
+                routing.solver()->MakeGreaterOrEqual(
+                    time_dim.CumulVar(routing.Start(curr_v)),
+                    routing.solver()->MakeSum(
+                        time_dim.CumulVar(routing.End(prev_v)),
+                        turnaround_time_ms
+                    )
+                )
+            );
+
+            constraint_count++;
+        }
+    }
+
+    std::cerr << "[multi-trip] Added " << constraint_count << " trip sequencing constraints\n";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS FOR MODULARIZATION
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -196,16 +315,20 @@ static void setup_vehicle_costs(
         if (config_map.find(veh_type) == config_map.end()) continue;
 
         const VehicleConfig& vc = config_map.at(veh_type);
-        int64_t fixed_cost_mm = static_cast<int64_t>(vc.fixed_cost_km_equiv * 1e6);
+
+        // Only charge fixed cost for first trip (trip_number == 0)
+        int64_t fixed_cost_mm = (vehicles[v].trip_number == 0)
+            ? static_cast<int64_t>(vc.fixed_cost_km_equiv * 1e6)
+            : 0;
+
         routing.SetFixedCostOfVehicle(fixed_cost_mm, v);
 
-        if (v == 0 || vehicles[v-1].type != veh_type) {
-            std::cerr << "[cvrp]   " << veh_type << ": "
-                      << vc.fixed_cost_km_equiv << " km-equiv\n";
+        // Print once per vehicle type (only for first trip)
+        if (v == 0 || vehicles[v-1].type != veh_type || vehicles[v].trip_number == 0) {
+            std::cerr << "[cvrp]   " << veh_type << " (trip " << vehicles[v].trip_number << "): "
+                      << (fixed_cost_mm / 1e6) << " km-equiv\n";
         }
     }
-
-    std::cerr << "[cvrp] ✓ Vehicle-specific costs applied\n";
 }
 
 
@@ -360,15 +483,31 @@ int64_t compute_disjunction_penalty(
     int station_node,
     const QueryPathFn& query_path)
 {
-    int64_t sum_distances = 0;
+    int64_t total_distance = 0;
+    int64_t max_single_distance = 0;
+
     for (size_t i = 0; i < commuter_nodes.size(); ++i)
     {
         std::vector<int> leg;
         int d_mm = query_path(commuter_nodes[i], station_node, leg);
-        if (d_mm > 0) sum_distances += d_mm;
+        if (d_mm > 0) {
+            total_distance += d_mm;
+            if (d_mm > max_single_distance) {
+                max_single_distance = d_mm;
+            }
+        }
     }
 
-    return (sum_distances > 0) ? sum_distances : 10000000000LL;
+    // Make penalty EXTREMELY HIGH: 10x total distance
+    // This ensures customers are only skipped if truly infeasible
+    int64_t penalty = total_distance * 10;
+
+    // Fallback if no valid distances
+    if (penalty <= 0) {
+        penalty = 10'000'000'000LL;  // 10 million km
+    }
+
+    return penalty;
 }
 
 
@@ -383,34 +522,49 @@ static void add_disjunctions(
 {
     const int N = static_cast<int>(commuter_nodes.size());
 
-    if (cfg.allow_partial_solution)
-    {
-        int64_t sum_distances = 0;
-        for (int i = 0; i < N; ++i)
-        {
-            std::vector<int> leg;
-            int d_mm = query_path(commuter_nodes[i], station_node, leg);
-            if (d_mm > 0) sum_distances += d_mm;
-        }
-
-        const int64_t penalty = compute_disjunction_penalty(
-            commuter_nodes, station_node, query_path
-        );
-
-        std::cerr << "[cvrp] PARTIAL SOLUTIONS ENABLED - customers optional with penalty="
-            << penalty << " mm\n";
-
-        for (int i = 0; i < N; ++i)
-        {
-            const int64_t node_idx = manager.NodeToIndex(
-                RoutingIndexManager::NodeIndex(i + 1)
-            );
-            routing.AddDisjunction({node_idx}, penalty);
-        }
-    }
-    else
+    if (!cfg.allow_partial_solution)
     {
         std::cerr << "[cvrp] PARTIAL SOLUTIONS DISABLED - all customers MANDATORY\n";
+        return;  // Don't add disjunctions - all customers required
+    }
+
+    // Calculate penalty for fallback mode
+    int64_t total_distance = 0;
+    int64_t max_single_distance = 0;
+
+    for (int i = 0; i < N; ++i)
+    {
+        std::vector<int> leg;
+        int d_mm = query_path(commuter_nodes[i], station_node, leg);
+        if (d_mm > 0) {
+            total_distance += d_mm;
+            if (d_mm > max_single_distance) {
+                max_single_distance = d_mm;
+            }
+        }
+    }
+
+    const int64_t penalty = compute_disjunction_penalty(
+        commuter_nodes, station_node, query_path
+    );
+
+    std::cerr << "[cvrp] PARTIAL SOLUTIONS ENABLED (fallback mode)\n";
+    std::cerr << "[cvrp]   Max single distance: "
+              << std::fixed << std::setprecision(2)
+              << (max_single_distance / 1e6) << " km\n";
+    std::cerr << "[cvrp]   Total distance sum: "
+              << (total_distance / 1e6) << " km\n";
+    std::cerr << "[cvrp]   Penalty per skipped customer: "
+              << (penalty / 1e6) << " km-equiv (10x total)\n";
+    std::cerr << "[cvrp]   → Skipping only if TRULY INFEASIBLE\n";
+
+    // Add each customer as optional with massive penalty
+    for (int i = 0; i < N; ++i)
+    {
+        const int64_t node_idx = manager.NodeToIndex(
+            RoutingIndexManager::NodeIndex(i + 1)
+        );
+        routing.AddDisjunction({node_idx}, penalty);
     }
 }
 
@@ -513,6 +667,7 @@ static void print_route_diagnostics(
 
     for (int v = 0; v < routing.vehicles(); ++v)
     {
+
         std::cerr << "[diag] Vehicle " << v << " (" << vehicles[v].type
             << ", cap=" << vehicles[v].capacity << ") route:\n";
         int64_t idx = routing.Start(v);
@@ -537,16 +692,17 @@ static void print_route_diagnostics(
             }
             idx = solution->Value(routing.NextVar(idx));
         }
-
+        if (!has_customers)
+        {
+            std::cerr << "  (empty route - vehicle not used)\n";
+            continue;
+        }
         int64_t end_load = solution->Value(cap_dim.CumulVar(routing.End(v)));
         int64_t end_time = solution->Value(time_dim.CumulVar(routing.End(v)));
         std::cerr << "  -> DEPOT (load=" << end_load << ", time=" << end_time
             << " ms) [END]\n";
 
-        if (!has_customers)
-        {
-            std::cerr << "  (empty route - vehicle not used)\n";
-        }
+
     }
 }
 
@@ -694,6 +850,9 @@ CVRPSolution solve_cvrp_distance_with_metrics(
     );
 
     add_disjunctions(routing, manager, query_path, station_node, commuter_nodes, exp_config.solver);
+
+    add_trip_sequencing_constraints(routing, vehicles, 5 * 60 * 1000); // 5 min turnaround
+
 
     // ═══════════════════════════════════════════════════════════════════════
     // 3. Solve

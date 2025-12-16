@@ -36,3 +36,4 @@ files/inputs/*.*
 dataset/MELTON/*.dlabel
 dataset/MELTON/*.dorder
 dataset/MELTON/*.txt
+experiments/*
