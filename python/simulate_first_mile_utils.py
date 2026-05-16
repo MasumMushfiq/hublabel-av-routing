@@ -1,0 +1,203 @@
+"""
+simulate_first_mile_utils.py
+Utility functions extracted from simulate_first_mile_pyvrp.py for unit testing.
+"""
+from dataclasses import dataclass
+from typing import List, Dict, Tuple, Optional
+import numpy as np
+
+@dataclass
+class Commuter:
+    id: int
+    origin_node: int
+    destination_node: int
+    pickup_earliest_min: float
+    drop_off_latest_min: float
+
+@dataclass
+class VehicleConfig:
+    name: str
+    capacity: int
+    max_speed_kmph: float
+    fuel_l_per_100km: float
+    co2_kg_per_liter: float
+    fleet_size: int
+    lower_km: float
+    upper_km: float
+    fixed_cost_km_equiv: float
+
+@dataclass
+class TimeWindowConfig:
+    mode: str
+    interval_minutes: int
+    start_time_minutes: int
+    end_time_minutes: int
+    buffer_before_deadline_sec: float
+
+@dataclass
+class ExperimentConfig:
+    experiment_name: str
+    vehicle_types: List[VehicleConfig]
+    time_window: TimeWindowConfig
+    time_limit_seconds: int
+    alpha: float
+    beta: float
+    private_car_fuel_l_per_100km: float
+    private_car_co2_kg_per_liter: float
+    private_car_speed_kmph: float
+    penalty_mode: str = "multiplicative"
+    preference_scale_m: int = 500
+
+
+def smooth_penalty(d_km: float, lower_km: float, upper_km: float,
+                   alpha: float, beta: float) -> float:
+    if upper_km <= 0:
+        upper_km = 1e-6
+    if d_km < lower_km and lower_km > 0:
+        ratio = lower_km / max(d_km, 1e-6)
+        return 1.0 + beta * ((ratio - 1.0) ** alpha)
+    elif d_km > upper_km:
+        ratio = d_km / upper_km
+        return 1.0 + beta * ((ratio - 1.0) ** alpha)
+    return 1.0
+
+
+def build_cost_matrix(dist_m: np.ndarray,
+                      lower_km: float, upper_km: float,
+                      alpha: float, beta: float,
+                      penalty_mode: str = "multiplicative",
+                      preference_scale_m: int = 500) -> np.ndarray:
+    M = dist_m.shape[0]
+    cost = np.zeros((M, M), dtype=np.int64)
+    for i in range(M):
+        for j in range(M):
+            if i == j:
+                continue
+            d_m_val = int(dist_m[i, j])
+            d_km    = d_m_val / 1000.0
+            if penalty_mode == "multiplicative":
+                p = smooth_penalty(d_km, lower_km, upper_km, alpha, beta)
+                cost[i, j] = int(d_m_val * p)
+            elif penalty_mode == "additive":
+                p = smooth_penalty(d_km, lower_km, upper_km, alpha, beta)
+                additive_pref = int((p - 1.0) * preference_scale_m)
+                cost[i, j] = d_m_val + additive_pref
+            else:  # "none"
+                cost[i, j] = d_m_val
+    return cost
+
+
+def generate_windows_sec(tw: TimeWindowConfig) -> List[int]:
+    windows = []
+    t = tw.start_time_minutes
+    while t <= tw.end_time_minutes:
+        windows.append(t * 60)
+        t += tw.interval_minutes
+    return windows
+
+
+def assign_latest_feasible_window(
+        commuters: List[Commuter],
+        windows_sec: List[int],
+        dur_fastest: np.ndarray,
+        node_to_idx: Dict[int, int],
+        station_idx: int,
+        buffer_sec: float) -> List[int]:
+    assignment = [-1] * len(commuters)
+    for i, c in enumerate(commuters):
+        c_idx = node_to_idx.get(c.origin_node, -1)
+        if c_idx < 0:
+            continue
+        tt_sec = int(dur_fastest[c_idx, station_idx])
+        pickup_earliest_sec = c.pickup_earliest_min * 60.0
+        dropoff_latest_sec  = c.drop_off_latest_min * 60.0
+        earliest_arrival    = pickup_earliest_sec + tt_sec
+        for w in range(len(windows_sec) - 1, -1, -1):
+            deadline = windows_sec[w] - buffer_sec
+            if earliest_arrival <= deadline <= dropoff_latest_sec:
+                assignment[i] = w
+                break
+    return assignment
+
+
+def assign_individual_windows(
+        commuters: List[Commuter],
+        dur_fastest: np.ndarray,
+        node_to_idx: Dict[int, int],
+        station_idx: int) -> List[Tuple[int, int]]:
+    windows = []
+    for c in commuters:
+        c_idx = node_to_idx.get(c.origin_node, -1)
+        if c_idx < 0:
+            windows.append((-1, -1))
+            continue
+        tt_sec = int(dur_fastest[c_idx, station_idx])
+        tw_early = int(c.pickup_earliest_min * 60)
+        tw_late  = int(c.drop_off_latest_min * 60) - int(tt_sec)
+        if tw_late < tw_early:
+            windows.append((-1, -1))
+        else:
+            windows.append((tw_early, tw_late))
+    return windows
+
+
+def calculate_baseline(
+        commuters: List[Commuter],
+        feasible_idx: List[int],
+        raw_dist_sub: np.ndarray,
+        original_count: int,
+        cfg: ExperimentConfig) -> dict:
+    total_mm = 0
+    for sub_i, orig_i in enumerate(feasible_idx):
+        total_mm += int(raw_dist_sub[sub_i + 1, 0])
+    total_km = total_mm / 1_000_000.0
+    fuel     = total_km * cfg.private_car_fuel_l_per_100km / 100.0
+    co2      = fuel * cfg.private_car_co2_kg_per_liter
+    return {
+        "total_commuters":    original_count,
+        "feasible_commuters": len(feasible_idx),
+        "total_vmt_km":       round(total_km, 4),
+        "total_fuel_liters":  round(fuel, 4),
+        "total_co2_kg":       round(co2, 4),
+        "passenger_km":       round(total_km, 4),
+        "avg_trip_km":        round(total_km / len(feasible_idx), 4)
+                              if feasible_idx else 0.0,
+        "private_car_speed_kmph": cfg.private_car_speed_kmph,
+    }
+
+
+def compare(av: dict, baseline: dict, name: str,
+            seed: int = 0, cfg: "ExperimentConfig | None" = None) -> dict:
+    def pct(av_v, base_v):
+        return round((av_v - base_v) / base_v * 100.0, 2) if base_v else 0.0
+    out = {
+        "experiment_name":           name,
+        "seed":                      seed,
+        "penalty_mode":              cfg.penalty_mode              if cfg else "",
+        "time_window_mode":          cfg.time_window.mode          if cfg else "",
+        "interval_minutes":          cfg.time_window.interval_minutes if cfg else 0,
+        "service_rate_pct":          av["service_rate"],
+        "on_time_rate_pct":          av["on_time_rate"],
+        "late_deliveries":           av["late_deliveries"],
+        "vmt_change_pct":            pct(av["total_vmt_km"],      baseline["total_vmt_km"]),
+        "fuel_change_pct":           pct(av["total_fuel_liters"],  baseline["total_fuel_liters"]),
+        "co2_change_pct":            pct(av["total_co2_kg"],       baseline["total_co2_kg"]),
+        "av_total_vmt_km":           av["total_vmt_km"],
+        "baseline_total_vmt_km":     baseline["total_vmt_km"],
+        "av_total_co2_kg":           av["total_co2_kg"],
+        "baseline_total_co2_kg":     baseline["total_co2_kg"],
+        "avg_passengers_per_trip":   av["avg_passengers_per_trip"],
+        "vehicles_used":             av["vehicles_used"],
+        "vehicle_trips":             av["vehicle_trips"],
+        "solo_trips":                av["solo_trips"],
+        "shared_trips":              av["shared_trips"],
+        "avg_in_vehicle_time_min":   av["avg_in_vehicle_time_min"],
+        "max_in_vehicle_time_min":   av["max_in_vehicle_time_min"],
+        "avg_detour_ratio":          av["avg_detour_ratio"],
+        "max_detour_ratio":          av["max_detour_ratio"],
+        "baseline_avg_trip_km":      baseline["avg_trip_km"],
+        "baseline_avg_trip_min":     round(
+            baseline["avg_trip_km"] / baseline.get("private_car_speed_kmph", 50) * 60, 2
+        ) if baseline.get("avg_trip_km") else 0.0,
+    }
+    return out

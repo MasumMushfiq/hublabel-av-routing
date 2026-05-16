@@ -53,55 +53,26 @@ except ImportError:
     print("ERROR: PyVRP not installed. Run:  pip install pyvrp")
     sys.exit(1)
 
-
-# ══════════════════════════════════════════════════════════════════════════
-# DATA CLASSES  (mirror your C++ structs exactly)
-# ══════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class Commuter:
-    id: int
-    origin_node: int
-    destination_node: int
-    pickup_earliest_min: float   # minutes since midnight
-    drop_off_latest_min: float
-
-
-@dataclass
-class VehicleConfig:
-    name: str
-    capacity: int
-    max_speed_kmph: float
-    fuel_l_per_100km: float
-    co2_kg_per_liter: float
-    fleet_size: int
-    lower_km: float
-    upper_km: float
-    fixed_cost_km_equiv: float
+# Import pure utility functions from separate module so they can be
+# unit-tested without requiring PyVRP to be installed (tests import
+# the utils module directly).
+from simulate_first_mile_utils import (
+    Commuter,
+    VehicleConfig,
+    TimeWindowConfig,
+    ExperimentConfig,
+    smooth_penalty,
+    build_cost_matrix,
+    generate_windows_sec,
+    assign_latest_feasible_window,
+    assign_individual_windows,
+    calculate_baseline,
+    compare,
+)
 
 
-@dataclass
-class TimeWindowConfig:
-    mode: str                # "fixed_slots" or "individual"
-    interval_minutes: int
-    start_time_minutes: int      # e.g. 420 = 07:00
-    end_time_minutes: int        # e.g. 570 = 09:30
-    buffer_before_deadline_sec: float
-
-
-@dataclass
-class ExperimentConfig:
-    experiment_name: str
-    vehicle_types: List[VehicleConfig]
-    time_window: TimeWindowConfig
-    time_limit_seconds: int
-    alpha: float
-    beta: float
-    private_car_fuel_l_per_100km: float
-    private_car_co2_kg_per_liter: float
-    private_car_speed_kmph: float
-    penalty_mode: str = "multiplicative"  # "multiplicative" | "additive" | "none"
-    preference_scale_m: int = 500         # additive mode only: max preference penalty per arc (metres)
+# Data classes are imported from simulate_first_mile_utils to ensure a
+# single canonical definition for type checking and unit tests.
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -221,167 +192,6 @@ def load_matrices(matrices_dir: str, vehicle_types: List[VehicleConfig]):
     print(f"  ✓ Matrices loaded: {M}×{M}  ({M} nodes incl. depot)")
     print(f"  ✓ Units: distances in metres, durations in seconds")
     return dist_m, dur_sec_by_speed, dist_mm_raw, nodes
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# SMOOTH PENALTY  (exact replica of your C++ calculate_smooth_penalty)
-# ══════════════════════════════════════════════════════════════════════════
-
-def smooth_penalty(d_km: float, lower_km: float, upper_km: float,
-                   alpha: float, beta: float) -> float:
-    """
-    Returns a cost multiplier >= 1.0.
-    = 1.0 inside [lower_km, upper_km]
-    Rises steeply outside the band.
-    """
-    if upper_km <= 0:
-        upper_km = 1e-6
-    if d_km < lower_km and lower_km > 0:
-        ratio = lower_km / max(d_km, 1e-6)
-        return 1.0 + beta * ((ratio - 1.0) ** alpha)
-    elif d_km > upper_km:
-        ratio = d_km / upper_km
-        return 1.0 + beta * ((ratio - 1.0) ** alpha)
-    return 1.0
-
-
-def build_cost_matrix(dist_m: np.ndarray,
-                      lower_km: float, upper_km: float,
-                      alpha: float, beta: float,
-                      penalty_mode: str = "multiplicative",
-                      preference_scale_m: int = 500) -> np.ndarray:
-    """
-    Build cost matrix for one vehicle type.
-    Input:  dist_m[i,j] in metres
-    Output: cost[i,j] in metres (with preference signal depending on mode)
-
-    Three modes:
-      multiplicative (current/default):
-        cost = distance × smooth_penalty
-        Problem: inflates physical distances, solver reduces cost by taking
-                 longer routes with lower penalty → more VMT with more vehicles.
-
-      additive (corrected):
-        cost = distance + (smooth_penalty - 1.0) × preference_scale_m
-        Physical distance is never inflated. Preference signal is a fixed
-        additive term independent of distance. Solver cannot reduce cost
-        by taking longer routes.
-
-      none:
-        cost = distance (no preference signal at all)
-        Equivalent to no-preference condition.
-    """
-    M = dist_m.shape[0]
-    cost = np.zeros((M, M), dtype=np.int64)
-    for i in range(M):
-        for j in range(M):
-            if i == j:
-                continue
-            d_m_val = int(dist_m[i, j])
-            d_km    = d_m_val / 1000.0
-            if penalty_mode == "multiplicative":
-                p = smooth_penalty(d_km, lower_km, upper_km, alpha, beta)
-                cost[i, j] = int(d_m_val * p)
-            elif penalty_mode == "additive":
-                p = smooth_penalty(d_km, lower_km, upper_km, alpha, beta)
-                additive_pref = int((p - 1.0) * preference_scale_m)
-                cost[i, j] = d_m_val + additive_pref
-            else:  # "none"
-                cost[i, j] = d_m_val
-    return cost
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# TIME WINDOWS
-# ══════════════════════════════════════════════════════════════════════════
-
-def generate_windows_sec(tw: TimeWindowConfig) -> List[int]:
-    """Window deadlines in seconds since midnight."""
-    windows = []
-    t = tw.start_time_minutes
-    while t <= tw.end_time_minutes:
-        windows.append(t * 60)
-        t += tw.interval_minutes
-    return windows
-
-
-def assign_latest_feasible_window(
-        commuters: List[Commuter],
-        windows_sec: List[int],
-        dur_fastest: np.ndarray,   # duration matrix at max vehicle speed
-        node_to_idx: Dict[int, int],
-        station_idx: int,
-        buffer_sec: float) -> List[int]:
-    """
-    For each commuter, find the latest window w such that:
-      (a) pickup_earliest + travel_time <= window_deadline
-      (b) window_deadline <= drop_off_latest
-
-    Uses the fastest vehicle's duration matrix for travel time
-    (same logic as your C++ assign_latest_feasible_window).
-
-    Returns list of window indices, -1 = no feasible window.
-    """
-    assignment = [-1] * len(commuters)
-    for i, c in enumerate(commuters):
-        c_idx = node_to_idx.get(c.origin_node, -1)
-        if c_idx < 0:
-            continue  # node not in matrix — unreachable
-
-        # dur_fastest is already in seconds (converted in load_matrices)
-        tt_sec = int(dur_fastest[c_idx, station_idx])
-
-        pickup_earliest_sec = c.pickup_earliest_min * 60.0
-        dropoff_latest_sec  = c.drop_off_latest_min * 60.0
-        earliest_arrival    = pickup_earliest_sec + tt_sec
-
-        for w in range(len(windows_sec) - 1, -1, -1):
-            deadline = windows_sec[w] - buffer_sec
-            if earliest_arrival <= deadline <= dropoff_latest_sec:
-                assignment[i] = w
-                break
-    return assignment
-
-
-def assign_individual_windows(
-        commuters: List[Commuter],
-        dur_fastest: np.ndarray,
-        node_to_idx: Dict[int, int],
-        station_idx: int) -> List[Tuple[int, int]]:
-    """
-    Individual window mode: use each commuter's own pickup_earliest and
-    drop_off_latest directly from the CSV — no fixed train slot assignment.
-
-    tw_late = drop_off_latest - travel_time_to_station
-    (the vehicle must pick up the commuter early enough to arrive by their
-    personal drop_off_latest, accounting for travel time)
-
-    Returns list of (tw_early_sec, tw_late_sec) per commuter.
-    -1, -1 means infeasible (travel time alone exceeds their window).
-    """
-    windows = []
-    for c in commuters:
-        c_idx = node_to_idx.get(c.origin_node, -1)
-        if c_idx < 0:
-            windows.append((-1, -1))
-            continue
-
-        # dur_fastest is already in seconds (converted in load_matrices)
-        tt_sec = int(dur_fastest[c_idx, station_idx])
-        tw_early = int(c.pickup_earliest_min * 60)
-        tw_late  = int(c.drop_off_latest_min * 60) - int(tt_sec)
-
-        if tw_late < tw_early:
-            # Travel time alone exceeds their window — infeasible
-            windows.append((-1, -1))
-        else:
-            windows.append((tw_early, tw_late))
-
-    feasible = sum(1 for tw in windows if tw[0] >= 0)
-    infeasible = len(windows) - feasible
-    if infeasible > 0:
-        print(f"  ⚠  {infeasible} commuters infeasible (travel time > window width)")
-    return windows
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -518,6 +328,9 @@ def build_model(
 
     for orig_idx in feasible_idx:
         c = commuters[orig_idx]
+        # default placeholders to satisfy type checker and diagnostics
+        w = None
+        direct_tt_sec = None
 
         # default placeholders to satisfy type checker and diagnostics
         w = None
@@ -736,8 +549,8 @@ def extract_results(
         cost_matrices: List[np.ndarray], # penalised metres, one per vehicle type
         station_node: int,
         assignments_csv: str,
-    av_routes_csv: str,
-    original_count: int = 0) -> dict:
+        av_routes_csv: str,
+        original_count: int = 0) -> dict:
     """
     Parse PyVRP routes and write output CSVs matching your existing format:
 
