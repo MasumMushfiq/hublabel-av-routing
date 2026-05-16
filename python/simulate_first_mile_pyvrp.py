@@ -511,8 +511,17 @@ def build_model(
 
     # ── Clients ────────────────────────────────────────────────────────
     clients = []
+    clamped_count   = 0      # diagnostic: tw_late < tw_early before fix
+    clamped_examples: list  = []
+    excluded_clamp  = 0      # commuters excluded due to tw_late < tw_early
+    valid_feasible_idx = []  # feasible_idx entries that actually get a client
+
     for orig_idx in feasible_idx:
         c = commuters[orig_idx]
+
+        # default placeholders to satisfy type checker and diagnostics
+        w = None
+        direct_tt_sec = None
 
         if individual_mode:
             # Use individual window directly from CSV
@@ -537,8 +546,33 @@ def build_model(
                           - cfg.time_window.buffer_before_deadline_sec
                           - direct_tt_sec)
 
+        # Guard: tw_late < tw_early means the slot assignment and model
+        # construction used inconsistent travel times (rounding / speed
+        # mismatch).  Previously this was silently clamped to tw_late=tw_early,
+        # producing zero-width windows that the solver treated as hard
+        # pickup-time constraints, inflating late arrivals artificially.
+        # Fix: exclude these commuters from the model entirely (same as -1
+        # from assign_latest_feasible_window) and report diagnostics.
         if tw_late < tw_early:
-            tw_late = tw_early
+            clamped_count += 1
+            if len(clamped_examples) < 10:
+                assigned_slot_min = None
+                if (not individual_mode) and (windows_sec is not None) and (w is not None):
+                    assigned_slot_min = windows_sec[w] / 60
+                direct_tt_val = direct_tt_sec if (not individual_mode) else None
+                clamped_examples.append({
+                    "commuter_id":        c.id,
+                    "pickup_earliest_min": c.pickup_earliest_min,
+                    "drop_off_latest_min": c.drop_off_latest_min,
+                    "assigned_slot_min":  assigned_slot_min,
+                    "tw_early_min":       tw_early / 60,
+                    "tw_late_before_fix": tw_late / 60,
+                    "direct_tt_sec":      direct_tt_val,
+                })
+            excluded_clamp += 1
+            continue   # exclude from model — do NOT clamp
+
+        valid_feasible_idx.append(orig_idx)
 
         # PyVRP 0.13 uses delivery= for load (replaces old demand=)
         clients.append(m.add_client(
@@ -549,6 +583,44 @@ def build_model(
             prize=skip_penalty,
             required=False,
         ))
+
+    # Report clamp diagnostics
+    if clamped_count > 0:
+        print(f"  WARNING: tw_late < tw_early detected and excluded: {clamped_count} commuters")
+        print(f"     (speed/rounding mismatch between slot assignment and model construction)")
+        for ex in clamped_examples:
+            print(f"     {ex}")
+    else:
+        print(f"  OK: No tw_late < tw_early cases (clamp guard not triggered)")
+
+    # Replace feasible_idx with the subset that actually got clients
+    # and rebuild sub-matrices so sub-index positions remain consistent.
+    # (matrix_rows was built before the loop using the original feasible_idx;
+    #  if any commuters were excluded by the clamp guard we must re-slice.)
+    if excluded_clamp > 0:
+        feasible_idx  = valid_feasible_idx
+        n_feasible    = len(feasible_idx)
+        matrix_rows   = [station_idx] + [node_to_idx[commuters[i].origin_node]
+                                          for i in feasible_idx]
+        idx_arr       = np.array(matrix_rows, dtype=np.intp)
+        dist_m_sub    = dist_m[np.ix_(idx_arr, idx_arr)]
+        cost_matrices = []
+        for vc in cfg.vehicle_types:
+            cost_matrices.append(build_cost_matrix(
+                dist_m_sub, vc.lower_km, vc.upper_km, cfg.alpha, cfg.beta,
+                penalty_mode=cfg.penalty_mode,
+                preference_scale_m=cfg.preference_scale_m,
+            ))
+        dur_matrices = []
+        for vc in cfg.vehicle_types:
+            dm = dur_sec_by_speed[vc.max_speed_kmph]
+            dur_matrices.append(dm[np.ix_(idx_arr, idx_arr)])
+        print(f"  Sub-matrices rebuilt after {excluded_clamp} clamp exclusions")
+    else:
+        feasible_idx = valid_feasible_idx
+        n_feasible   = len(feasible_idx)
+
+    print(f"  Clients added to model: {n_feasible}")
 
     # ── Vehicle types ──────────────────────────────────────────────────
     for k, vc in enumerate(cfg.vehicle_types):
@@ -664,7 +736,8 @@ def extract_results(
         cost_matrices: List[np.ndarray], # penalised metres, one per vehicle type
         station_node: int,
         assignments_csv: str,
-        av_routes_csv: str) -> dict:
+    av_routes_csv: str,
+    original_count: int = 0) -> dict:
     """
     Parse PyVRP routes and write output CSVs matching your existing format:
 
@@ -1034,7 +1107,10 @@ def extract_results(
 
     # ── Metrics dict ───────────────────────────────────────────────────
     served_count    = len(served_orig_ids)
-    total_commuters = len(feasible_idx)
+    # total_commuters = original demand, not just feasible subset.
+    # Using feasible_idx size would make service_rate 100% for coarse
+    # fixed-slot conditions that silently exclude infeasible commuters.
+    total_commuters = original_count if original_count > 0 else len(feasible_idx)
     unserved_count  = total_commuters - served_count
     total_vmt_km    = total_vmt_mm / 1_000_000.0
 
@@ -1380,7 +1456,8 @@ def main():
     metrics = extract_results(
         result, commuters, feasible_idx, window_assignment, windows_sec,
         cfg, raw_dist_mm_sub, cost_matrices,
-        station_node, assignments_csv, av_routes_csv
+        station_node, assignments_csv, av_routes_csv,
+        original_count=original_count
     )
 
     # ── 9. Print summary ───────────────────────────────────────────────
