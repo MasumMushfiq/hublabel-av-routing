@@ -233,3 +233,25 @@ set_target_properties(simulate_first_mile_ortools PROPERTIES
         INSTALL_RPATH "${ORT_BUILD}/lib"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/../bin"
 )
+
+# =====================================================================
+# --- dump_distance_matrix ---
+# =====================================================================
+add_executable(dump_distance_matrix
+        ${SRC}
+        ${PLANNER_SRC}
+        dump_distance_matrix.cpp
+)
+
+target_link_libraries(dump_distance_matrix PRIVATE
+        ZLIB::ZLIB
+        Threads::Threads
+)
+
+if (omp_lib)
+    target_link_libraries(dump_distance_matrix ${omp_lib})
+endif()
+
+set_target_properties(dump_distance_matrix PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/../bin"
+)

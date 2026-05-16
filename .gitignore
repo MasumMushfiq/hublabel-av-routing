@@ -1,11 +1,20 @@
+# ─────────────────────────────────────────────
+# macOS / IDE
+# ─────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+
+# ─────────────────────────────────────────────
+# Build artifacts
+# ─────────────────────────────────────────────
 bin/
-cmake-build-debug/
+build/
 cmake-build/
-ResultAnalysis/
-dataset
-# Build directories
+cmake-build-debug/
 cmake-build*/
-bin/
+ResultAnalysis/
+
 *.o
 *.a
 *.so
@@ -14,26 +23,58 @@ bin/
 # CMake generated
 CMakeCache.txt
 CMakeFiles/
-Makefile
 cmake_install.cmake
 install_manifest.txt
 
-# IDE
-.idea/
-.vscode/
+# Do NOT ignore project Makefile by default.
+# If you generate local Makefiles from CMake, they are already inside build dirs.
 
-# Python venvs
+# ─────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────
+__pycache__/
+*.pyc
 .venv/
+venv/
+experiments/*.venv/
 
-# Logs
+# ─────────────────────────────────────────────
+# Logs / backups
+# ─────────────────────────────────────────────
 *.log
+*.bak
 
-# Data artifacts
-files/*.csv
+# ─────────────────────────────────────────────
+# Local/generated outputs
+# ─────────────────────────────────────────────
+results/
+audio/
+
+files/matrices/
+files/outputs/
 files/*.html
-files/outputs/*.*
-files/inputs/*.*
-dataset/MELTON/*.dlabel
-dataset/MELTON/*.dorder
-dataset/MELTON/*.txt
-experiments/*
+files/*.csv
+
+# Ignore local input files if they are generated/private.
+# Remove this line if you want to commit small sample inputs.
+files/inputs/
+
+# ─────────────────────────────────────────────
+# Large data / matrices
+# ─────────────────────────────────────────────
+*.npy
+*.npz
+dataset/
+
+# ─────────────────────────────────────────────
+# Experiment generated results
+# ─────────────────────────────────────────────
+experiments/**/results/
+experiments_ortools/**/results/
+experiments_testing_phase/**/results/
+
+# These older experiment folders look local/generated.
+# Remove these two lines later if you want to version cleaned scripts/configs from them.
+experiments_ortools/
+experiments_testing_phase/
+
