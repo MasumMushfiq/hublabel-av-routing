@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 
+PARKING_EQUIV_BY_VEHICLE_TYPE = {
+    "scooter": 0.25,
+    "moped": 0.50,
+    "car": 1.00,
+    "minibus": 2.00,
+}
+
+
 @dataclass
 class Commuter:
     id: int
@@ -47,6 +55,51 @@ class ExperimentConfig:
     private_car_speed_kmph: float
     penalty_mode: str = "multiplicative"
     preference_scale_m: int = 500
+
+
+def parking_equiv_for_vehicle_type(name: str) -> float:
+    normalized = "".join(ch for ch in name.lower() if ch.isalnum())
+    if "minibus" in normalized or "minivan" in normalized or "shuttle" in normalized:
+        return PARKING_EQUIV_BY_VEHICLE_TYPE["minibus"]
+    if "scooter" in normalized:
+        return PARKING_EQUIV_BY_VEHICLE_TYPE["scooter"]
+    if "moped" in normalized:
+        return PARKING_EQUIV_BY_VEHICLE_TYPE["moped"]
+    if "car" in normalized:
+        return PARKING_EQUIV_BY_VEHICLE_TYPE["car"]
+    return PARKING_EQUIV_BY_VEHICLE_TYPE["car"]
+
+
+def calculate_parking_metrics(av: dict, cfg: ExperimentConfig) -> dict:
+    baseline_parking_spaces = av.get("total_commuters", 0)
+    fallback_private_cars = av.get("unserved_commuters", 0) + av.get("late_deliveries", 0)
+    station_commuter_parking_spaces = fallback_private_cars
+    fleet_storage_equiv_spaces = sum(
+        vc.fleet_size * parking_equiv_for_vehicle_type(vc.name)
+        for vc in cfg.vehicle_types
+    )
+    net_parking_equiv = station_commuter_parking_spaces + fleet_storage_equiv_spaces
+
+    if baseline_parking_spaces:
+        station_reduction_pct = 100.0 * (
+            1.0 - station_commuter_parking_spaces / baseline_parking_spaces
+        )
+        net_reduction_pct = 100.0 * (
+            1.0 - net_parking_equiv / baseline_parking_spaces
+        )
+    else:
+        station_reduction_pct = 0.0
+        net_reduction_pct = 0.0
+
+    return {
+        "fallback_private_cars": fallback_private_cars,
+        "baseline_parking_spaces": baseline_parking_spaces,
+        "station_commuter_parking_spaces": station_commuter_parking_spaces,
+        "station_parking_reduction_pct": round(station_reduction_pct, 2),
+        "fleet_storage_equiv_spaces": round(fleet_storage_equiv_spaces, 4),
+        "net_parking_equiv_if_fleet_stored_at_station": round(net_parking_equiv, 4),
+        "net_parking_reduction_pct_if_fleet_stored_at_station": round(net_reduction_pct, 2),
+    }
 
 
 def smooth_penalty(d_km: float, lower_km: float, upper_km: float,
@@ -200,4 +253,15 @@ def compare(av: dict, baseline: dict, name: str,
             baseline["avg_trip_km"] / baseline.get("private_car_speed_kmph", 50) * 60, 2
         ) if baseline.get("avg_trip_km") else 0.0,
     }
+    for key in (
+        "fallback_private_cars",
+        "baseline_parking_spaces",
+        "station_commuter_parking_spaces",
+        "station_parking_reduction_pct",
+        "fleet_storage_equiv_spaces",
+        "net_parking_equiv_if_fleet_stored_at_station",
+        "net_parking_reduction_pct_if_fleet_stored_at_station",
+    ):
+        if key in av:
+            out[key] = av[key]
     return out

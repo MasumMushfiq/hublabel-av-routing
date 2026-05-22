@@ -5,6 +5,16 @@ import math
 # Ensure the module path finds simulate_first_mile_utils in the parent directory
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+PARKING_FIELDS = {
+    "fallback_private_cars",
+    "baseline_parking_spaces",
+    "station_commuter_parking_spaces",
+    "station_parking_reduction_pct",
+    "fleet_storage_equiv_spaces",
+    "net_parking_equiv_if_fleet_stored_at_station",
+    "net_parking_reduction_pct_if_fleet_stored_at_station",
+}
+
 from simulate_first_mile_utils import (
     smooth_penalty,
     build_cost_matrix,
@@ -12,6 +22,7 @@ from simulate_first_mile_utils import (
     assign_latest_feasible_window,
     assign_individual_windows,
     calculate_baseline,
+    calculate_parking_metrics,
     compare,
     Commuter,
     TimeWindowConfig,
@@ -97,7 +108,38 @@ def test_calculate_baseline_and_compare():
     av = {"total_vmt_km": 2.4, "total_fuel_liters": 0.192, "total_co2_kg": 0.4416,
           "service_rate": 100.0, "on_time_rate": 100.0, "late_deliveries": 0,
           "avg_passengers_per_trip":1.0, "vehicles_used":1, "vehicle_trips":2,
-          "solo_trips":2, "shared_trips":0, "avg_in_vehicle_time_min":0.0, "max_in_vehicle_time_min":0.0, "avg_detour_ratio":1.0, "max_detour_ratio":1.0}
+          "solo_trips":2, "shared_trips":0, "avg_in_vehicle_time_min":0.0, "max_in_vehicle_time_min":0.0, "avg_detour_ratio":1.0, "max_detour_ratio":1.0,
+          "fallback_private_cars":0, "baseline_parking_spaces":2,
+          "station_commuter_parking_spaces":0, "station_parking_reduction_pct":100.0,
+          "fleet_storage_equiv_spaces":1.0, "net_parking_equiv_if_fleet_stored_at_station":1.0,
+          "net_parking_reduction_pct_if_fleet_stored_at_station":50.0}
     comp = compare(av, baseline, "exp", seed=1, cfg=cfg)
     assert "vmt_change_pct" in comp
     assert isinstance(comp["vmt_change_pct"], float)
+    assert PARKING_FIELDS.issubset(comp)
+    assert comp["fleet_storage_equiv_spaces"] == 1.0
+
+
+def test_calculate_parking_metrics_validation_example():
+    vehicle_types = [
+        VehicleConfig(name="Scooters", capacity=1, max_speed_kmph=25, fuel_l_per_100km=0.0, co2_kg_per_liter=0.0, fleet_size=56, lower_km=0, upper_km=10, fixed_cost_km_equiv=0),
+        VehicleConfig(name="Moped", capacity=2, max_speed_kmph=45, fuel_l_per_100km=0.0, co2_kg_per_liter=0.0, fleet_size=28, lower_km=0, upper_km=10, fixed_cost_km_equiv=0),
+        VehicleConfig(name="Car", capacity=4, max_speed_kmph=50, fuel_l_per_100km=8.0, co2_kg_per_liter=2.3, fleet_size=14, lower_km=0, upper_km=10, fixed_cost_km_equiv=0),
+        VehicleConfig(name="Mini Bus", capacity=8, max_speed_kmph=50, fuel_l_per_100km=12.0, co2_kg_per_liter=2.3, fleet_size=7, lower_km=0, upper_km=10, fixed_cost_km_equiv=0),
+    ]
+    tw = TimeWindowConfig(mode="fixed_slots", interval_minutes=10, start_time_minutes=420, end_time_minutes=480, buffer_before_deadline_sec=0)
+    cfg = ExperimentConfig(experiment_name="parking", vehicle_types=vehicle_types, time_window=tw, time_limit_seconds=60, alpha=1.0, beta=1.0, private_car_fuel_l_per_100km=8.0, private_car_co2_kg_per_liter=2.3, private_car_speed_kmph=50)
+    av = {
+        "total_commuters": 1465,
+        "unserved_commuters": 0,
+        "late_deliveries": 36,
+    }
+
+    parking = calculate_parking_metrics(av, cfg)
+
+    assert PARKING_FIELDS.issubset(parking)
+    assert parking["fallback_private_cars"] == 36
+    assert parking["fleet_storage_equiv_spaces"] == 56.0
+    assert parking["station_parking_reduction_pct"] == 97.54
+    assert parking["net_parking_equiv_if_fleet_stored_at_station"] == 92.0
+    assert parking["net_parking_reduction_pct_if_fleet_stored_at_station"] == 93.72

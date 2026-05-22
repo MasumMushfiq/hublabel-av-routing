@@ -67,6 +67,7 @@ from simulate_first_mile_utils import (
     assign_latest_feasible_window,
     assign_individual_windows,
     calculate_baseline,
+    calculate_parking_metrics,
     compare,
 )
 
@@ -935,7 +936,7 @@ def extract_results(
     avg_detour_ratio = round(sum(detour_ratios) / n_dr, 4) if n_dr else 0.0
     max_detour_ratio = round(max(detour_ratios), 4)        if n_dr else 0.0
 
-    return {
+    metrics = {
         "total_commuters":         total_commuters,
         "served_commuters":        served_count,
         "unserved_commuters":      unserved_count,
@@ -975,85 +976,8 @@ def extract_results(
         "n_detour_ratio_samples":  n_dr,
         "per_vehicle_type":        per_type,
     }
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# BASELINE
-# ══════════════════════════════════════════════════════════════════════════
-
-def calculate_baseline(
-        commuters: List[Commuter],
-        feasible_idx: List[int],
-        raw_dist_sub: np.ndarray,
-        original_count: int,
-        cfg: ExperimentConfig) -> dict:
-    """
-    Private vehicle baseline: every commuter drives alone.
-    Mirrors your C++ calculate_private_vehicle_baseline.
-    raw_dist_sub[sub_i+1, 0] = commuter i → station in mm.
-    """
-    total_mm = 0
-    for sub_i, orig_i in enumerate(feasible_idx):
-        total_mm += int(raw_dist_sub[sub_i + 1, 0])
-
-    total_km = total_mm / 1_000_000.0
-    fuel     = total_km * cfg.private_car_fuel_l_per_100km / 100.0
-    co2      = fuel * cfg.private_car_co2_kg_per_liter
-
-    return {
-        "total_commuters":    original_count,
-        "feasible_commuters": len(feasible_idx),
-        "total_vmt_km":       round(total_km, 4),
-        "total_fuel_liters":  round(fuel, 4),
-        "total_co2_kg":       round(co2, 4),
-        "passenger_km":       round(total_km, 4),
-        "avg_trip_km":        round(total_km / len(feasible_idx), 4)
-                              if feasible_idx else 0.0,
-        "private_car_speed_kmph": cfg.private_car_speed_kmph,
-    }
-
-
-def compare(av: dict, baseline: dict, name: str,
-            seed: int = 0, cfg: "ExperimentConfig | None" = None) -> dict:
-    def pct(av_v, base_v):
-        return round((av_v - base_v) / base_v * 100.0, 2) if base_v else 0.0
-    out = {
-        "experiment_name":           name,
-        # ── Run metadata (for batch aggregation) ──
-        "seed":                      seed,
-        "penalty_mode":              cfg.penalty_mode              if cfg else "",
-        "time_window_mode":          cfg.time_window.mode          if cfg else "",
-        "interval_minutes":          cfg.time_window.interval_minutes if cfg else 0,
-        # ── Service quality ──
-        "service_rate_pct":          av["service_rate"],
-        "on_time_rate_pct":          av["on_time_rate"],
-        "late_deliveries":           av["late_deliveries"],
-        # ── Environmental comparison ──
-        "vmt_change_pct":            pct(av["total_vmt_km"],      baseline["total_vmt_km"]),
-        "fuel_change_pct":           pct(av["total_fuel_liters"],  baseline["total_fuel_liters"]),
-        "co2_change_pct":            pct(av["total_co2_kg"],       baseline["total_co2_kg"]),
-        "av_total_vmt_km":           av["total_vmt_km"],
-        "baseline_total_vmt_km":     baseline["total_vmt_km"],
-        "av_total_co2_kg":           av["total_co2_kg"],
-        "baseline_total_co2_kg":     baseline["total_co2_kg"],
-        # ── Fleet usage ──
-        "avg_passengers_per_trip":   av["avg_passengers_per_trip"],
-        "vehicles_used":             av["vehicles_used"],
-        "vehicle_trips":             av["vehicle_trips"],
-        "solo_trips":                av["solo_trips"],
-        "shared_trips":              av["shared_trips"],
-        # ── Passenger experience ──
-        "avg_in_vehicle_time_min":   av["avg_in_vehicle_time_min"],
-        "max_in_vehicle_time_min":   av["max_in_vehicle_time_min"],
-        "avg_detour_ratio":          av["avg_detour_ratio"],
-        "max_detour_ratio":          av["max_detour_ratio"],
-        # ── Baseline reference ──
-        "baseline_avg_trip_km":      baseline["avg_trip_km"],
-        "baseline_avg_trip_min":     round(
-            baseline["avg_trip_km"] / baseline.get("private_car_speed_kmph", 50) * 60, 2
-        ) if baseline.get("avg_trip_km") else 0.0,
-    }
-    return out
+    metrics.update(calculate_parking_metrics(metrics, cfg))
+    return metrics
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1298,6 +1222,15 @@ def main():
     print(f"  Avg detour ratio:      {metrics['avg_detour_ratio']:.3f}"
           f"  (max {metrics['max_detour_ratio']:.3f},"
           f"  n={metrics['n_detour_ratio_samples']})")
+    print(f"\n  Parking demand:")
+    print(f"    Commuter parking:    {metrics['station_commuter_parking_spaces']:.0f}/"
+          f"{metrics['baseline_parking_spaces']:.0f} spaces "
+          f"({metrics['station_parking_reduction_pct']:.2f}% reduction)")
+    print(f"    Fleet storage:       {metrics['fleet_storage_equiv_spaces']:.2f} "
+          f"car-space equiv")
+    print(f"    Net at station:      "
+          f"{metrics['net_parking_equiv_if_fleet_stored_at_station']:.2f} spaces "
+          f"({metrics['net_parking_reduction_pct_if_fleet_stored_at_station']:.2f}% reduction)")
     print(f"\n  By vehicle type:")
     for vtype, pt in metrics["per_vehicle_type"].items():
         if pt["vehicle_trips"] > 0:
