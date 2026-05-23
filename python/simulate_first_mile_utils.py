@@ -354,6 +354,11 @@ def compare(av: dict, baseline: dict, name: str,
         "service_rate_pct":          av["service_rate"],
         "on_time_rate_pct":          av["on_time_rate"],
         "late_deliveries":           av["late_deliveries"],
+        "raw_solver_service_rate":   av.get("raw_solver_service_rate", 0.0),
+        "raw_solver_on_time_rate":   av.get("raw_solver_on_time_rate", 0.0),
+        "raw_solver_effective_on_time_service_rate": av.get(
+            "raw_solver_effective_on_time_service_rate", 0.0
+        ),
         "vmt_change_pct":            vmt_change_pct,
         "fuel_change_pct":           fuel_change_pct,
         "co2_change_pct":            co2_change_pct,

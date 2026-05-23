@@ -69,6 +69,9 @@ from simulate_first_mile_utils import (
     calculate_baseline,
     calculate_parking_metrics,
     compare,
+    TripStop,
+    iteratively_prune_late_commuters,
+    recompute_trip_timing,
 )
 
 
@@ -228,7 +231,8 @@ def build_model(
 
     • Optional clients with skip penalty: matches allow_partial_solution.
 
-    Returns (model, feasible_commuter_indices, cost_matrices_per_type).
+    Returns (model, feasible_commuter_indices, cost_matrices_per_type,
+    duration_matrices_per_type).
     """
 
     service_start_sec = cfg.time_window.start_time_minutes * 60
@@ -329,10 +333,6 @@ def build_model(
 
     for orig_idx in feasible_idx:
         c = commuters[orig_idx]
-        # default placeholders to satisfy type checker and diagnostics
-        w = None
-        direct_tt_sec = None
-
         # default placeholders to satisfy type checker and diagnostics
         w = None
         direct_tt_sec = None
@@ -474,7 +474,7 @@ def build_model(
                     profile=profile,
                 )
 
-    return m, feasible_idx, cost_matrices
+    return m, feasible_idx, cost_matrices, dur_matrices
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -548,10 +548,12 @@ def extract_results(
         cfg: ExperimentConfig,
         raw_dist_sub: np.ndarray,       # mm, shape (n_locs, n_locs)
         cost_matrices: List[np.ndarray], # penalised metres, one per vehicle type
+        duration_matrices: List[np.ndarray], # seconds, one per vehicle type
         station_node: int,
         assignments_csv: str,
         av_routes_csv: str,
-        original_count: int = 0) -> dict:
+        original_count: int = 0,
+        original_commuters: Optional[List[Commuter]] = None) -> dict:
     """
     Parse PyVRP routes and write output CSVs matching your existing format:
 
@@ -565,17 +567,25 @@ def extract_results(
     """
 
     routes = result.best.routes()
+    if original_commuters is None:
+        original_commuters = commuters
 
     # Map sub-matrix index (1-based) → original commuter index
     # sub-index 0 = depot, 1..n = commuters in feasible_idx order
     sub_to_orig = {sub_i + 1: orig_i
                    for sub_i, orig_i in enumerate(feasible_idx)}
 
+    raw_solver_assigned_orig_ids = set()
     served_orig_ids = set()
     assign_rows = []
     route_rows  = []
 
     # ── Accumulators ──────────────────────────────────────────────────────
+    raw_total_vmt_mm        = 0
+    raw_total_fuel_L        = 0.0
+    raw_total_co2_kg        = 0.0
+    raw_vehicle_trips       = 0
+    raw_solver_late_deliveries = 0
     total_vmt_mm        = 0
     total_penalised_m   = 0
     total_empty_mm      = 0
@@ -618,8 +628,7 @@ def extract_results(
         vtype_idx  = route.vehicle_type()
         vtype_name = vtype_names[vtype_idx]
         vc         = vc_map[vtype_name]
-        vehicles_used += 1
-        per_type[vtype_name]["vehicles_used"] += 1
+        route_has_adjusted_trip = False
 
         # ── Segment route into sub-trips using schedule() ──────────────
         # schedule() yields Activity objects for every stop including depot
@@ -699,9 +708,7 @@ def extract_results(
             sub_trips = [t for t in sub_trips if t]
             trip_depot_arrivals = [None] * len(sub_trips)
 
-        n_sub_trips = len(sub_trips)
-        vehicle_trips += n_sub_trips
-        per_type[vtype_name]["vehicle_trips"] += n_sub_trips
+        raw_vehicle_trips += len(sub_trips)
 
         # ── Process each sub-trip individually ─────────────────────────
         for trip_num, trip_visits in enumerate(sub_trips):
@@ -709,65 +716,37 @@ def extract_results(
                 continue
 
             trip_orig_ids   = [sub_to_orig[v] for v in trip_visits]
-            trip_commuter_ids = [commuters[i].id for i in trip_orig_ids]
-            trip_pickup_nodes = [commuters[i].origin_node for i in trip_orig_ids]
-            n_trip_pax = len(trip_orig_ids)
-
-            # Mark as served
             for orig_i in trip_orig_ids:
-                served_orig_ids.add(orig_i)
+                raw_solver_assigned_orig_ids.add(orig_i)
 
             # ── Raw road distance (mm) ────────────────────────────────
-            seq = [0] + list(trip_visits) + [0]
-            trip_mm = sum(
-                int(raw_dist_sub[seq[k], seq[k+1]])
-                for k in range(len(seq) - 1)
+            raw_seq = [0] + list(trip_visits) + [0]
+            raw_trip_mm = sum(
+                int(raw_dist_sub[raw_seq[k], raw_seq[k+1]])
+                for k in range(len(raw_seq) - 1)
             )
-            # Empty leg = depot → first pickup of this sub-trip
-            trip_empty_mm  = int(raw_dist_sub[0, trip_visits[0]])
-            trip_loaded_mm = trip_mm - trip_empty_mm
 
             # ── Penalised cost (metres) — for reconciliation with solver ──
             # Uses the same cost matrix the solver used for this vehicle type.
             # Sum should equal result.best.distance() when all trips are summed.
             k = vtype_name_to_k[vtype_name]
             cost_mat = cost_matrices[k]
+            dur_mat = duration_matrices[k]
             trip_penalised_m = sum(
-                int(cost_mat[seq[i], seq[i+1]])
-                for i in range(len(seq) - 1)
+                int(cost_mat[raw_seq[i], raw_seq[i+1]])
+                for i in range(len(raw_seq) - 1)
             )
 
-            total_vmt_mm      += trip_mm
+            raw_total_vmt_mm  += raw_trip_mm
+            raw_trip_km = raw_trip_mm / 1_000_000.0
+            raw_fuel = raw_trip_km * vc.fuel_l_per_100km / 100.0
+            raw_total_fuel_L += raw_fuel
+            raw_total_co2_kg += raw_fuel * vc.co2_kg_per_liter
             total_penalised_m += trip_penalised_m
-            total_empty_mm    += trip_empty_mm
-            total_loaded_mm   += trip_loaded_mm
-
-            trip_km  = trip_mm  / 1_000_000.0
-            empty_km = trip_empty_mm / 1_000_000.0
-
-            fuel = trip_km * vc.fuel_l_per_100km / 100.0
-            co2  = fuel * vc.co2_kg_per_liter
-            total_fuel_L += fuel
-            total_co2_kg += co2
-
-            for sub_i in trip_visits:
-                pax_km = raw_dist_sub[sub_i, 0] / 1_000_000.0
-                total_pax_km += pax_km
-
-            # Solo/shared per actual sub-trip
-            if n_trip_pax <= 1:
-                solo_trips   += 1
-            else:
-                shared_trips += 1
-
-            per_type[vtype_name]["served_commuters"] += n_trip_pax
-            per_type[vtype_name]["vmt_km"]           += trip_km
-            per_type[vtype_name]["empty_km"]         += empty_km
 
             # ── Window time string ────────────────────────────────────
             wa = window_assignment[trip_orig_ids[0]]
             if windows_sec is not None:
-                assert windows_sec is not None
                 w_sec = windows_sec[wa]
                 w_str = f"{w_sec // 3600:02d}:{(w_sec % 3600) // 60:02d}"
             else:
@@ -775,69 +754,142 @@ def extract_results(
                 dl_min = int(c0.drop_off_latest_min)
                 w_str = f"{dl_min // 60:02d}:{dl_min % 60:02d}"
 
-            # ── av_routes.csv — one row per actual sub-trip ───────────
-            route_nodes_str = " ".join(
-                map(str, trip_pickup_nodes + [station_node]))
-            route_rows.append({
-                "av_type":                vtype_name,
-                "av_id":                  route_id,
-                "physical_id":            route_id,
-                "trip_num":               trip_num,
-                "station_node":           station_node,
-                "pickup_order_commuters": " ".join(map(str, trip_commuter_ids)),
-                "pickup_nodes":           " ".join(map(str, trip_pickup_nodes)),
-                "route_nodes":            route_nodes_str,
-            })
-
-            # ── assignments.csv — one row per commuter in this sub-trip
-            station_arrival = trip_depot_arrivals[trip_num] if trip_num < len(trip_depot_arrivals) else None
+            trip_stops = []
             for sub_i, orig_i in zip(trip_visits, trip_orig_ids):
-                c       = commuters[orig_i]
-                cost_mm = int(raw_dist_sub[sub_i, 0])
-                shared  = " ".join(str(commuters[o].id)
-                                   for o in trip_orig_ids if o != orig_i)
-
-                # Check if commuter arrived after their drop_off_latest
-                dropoff_latest_sec = int(c.drop_off_latest_min * 60)
-                if station_arrival is not None:
-                    arrived_late = int(station_arrival) > dropoff_latest_sec
-                    arrival_str  = f"{int(station_arrival)//3600:02d}:{(int(station_arrival)%3600)//60:02d}"
-                    delay_sec    = max(0, int(station_arrival) - dropoff_latest_sec)
-                else:
-                    arrived_late = False
-                    arrival_str  = ""
-                    delay_sec    = 0
-
-                # ── In-vehicle time (pickup → station arrival) ────────────
-                # Requires both pickup time from schedule and station arrival.
-                pickup_sec = client_pickup_sec.get(sub_i)
-                if pickup_sec is not None and station_arrival is not None:
-                    ivt_sec = float(station_arrival) - pickup_sec
-                    if ivt_sec >= 0:
-                        in_vehicle_times_sec.append(ivt_sec)
-
-                # ── Detour ratio (actual route dist / direct dist) ────────
-                # actual_mm: sum of road distances along the shared route
-                #   from this commuter's pickup to every subsequent stop
-                #   and finally to the depot, re-using the already-computed
-                #   trip sequence.  We approximate with the per-commuter
-                #   share of trip_mm: specifically the sub-sequence from
-                #   this commuter's position in seq to the depot.
-                # direct_mm: direct home → station distance (raw_dist_sub[sub_i, 0]).
-                # This is the standard definition used in the confirmation report.
-                direct_mm = int(raw_dist_sub[sub_i, 0])
-                if direct_mm > 0:
-                    # Position of this commuter in the trip sequence (1-based: 0 = depot)
-                    pax_pos   = list(trip_visits).index(sub_i)
-                    seq_from  = [sub_i] + list(trip_visits[pax_pos + 1:]) + [0]
-                    actual_mm = sum(
-                        int(raw_dist_sub[seq_from[p], seq_from[p + 1]])
-                        for p in range(len(seq_from) - 1)
+                c = commuters[orig_i]
+                if windows_sec is not None:
+                    stop_wa = window_assignment[orig_i]
+                    station_deadline_sec = int(windows_sec[stop_wa])
+                    pickup_earliest_sec = int(c.pickup_earliest_min * 60)
+                    pickup_latest_sec = int(
+                        station_deadline_sec
+                        - cfg.time_window.buffer_before_deadline_sec
+                        - int(dur_mat[sub_i, 0])
                     )
-                    detour_ratios.append(actual_mm / direct_mm)
+                else:
+                    pickup_earliest_sec, pickup_latest_sec = window_assignment[orig_i]
+                    station_deadline_sec = int(c.drop_off_latest_min * 60)
 
-                if arrived_late:
-                    late_deliveries += 1
+                trip_stops.append(TripStop(
+                    commuter_id=c.id,
+                    matrix_idx=sub_i,
+                    pickup_earliest_sec=int(pickup_earliest_sec),
+                    pickup_latest_sec=int(pickup_latest_sec),
+                    station_deadline_sec=int(station_deadline_sec),
+                    original_pickup_time_sec=int(
+                        client_pickup_sec.get(sub_i, pickup_earliest_sec)
+                    ),
+                ))
+
+            raw_timing = recompute_trip_timing(trip_stops, dur_mat)
+            raw_station_arrival = (
+                int(trip_depot_arrivals[trip_num])
+                if trip_num < len(trip_depot_arrivals)
+                and trip_depot_arrivals[trip_num] is not None
+                else raw_timing.station_arrival_sec
+            )
+            for stop in trip_stops:
+                if raw_station_arrival > stop.station_deadline_sec:
+                    raw_solver_late_deliveries += 1
+
+            pruned = iteratively_prune_late_commuters(trip_stops, dur_mat)
+            kept_ids = {stop.commuter_id for stop in pruned.kept_stops}
+            removed_ids = {stop.commuter_id for stop in pruned.removed_late_stops}
+            late_deliveries += len(removed_ids)
+
+            kept_visits = [stop.matrix_idx for stop in pruned.kept_stops]
+            kept_orig_ids = [sub_to_orig[v] for v in kept_visits]
+            for orig_i in kept_orig_ids:
+                served_orig_ids.add(orig_i)
+
+            if kept_visits:
+                route_has_adjusted_trip = True
+                vehicle_trips += 1
+                per_type[vtype_name]["vehicle_trips"] += 1
+
+                adjusted_seq = [0] + kept_visits + [0]
+                trip_mm = sum(
+                    int(raw_dist_sub[adjusted_seq[k], adjusted_seq[k+1]])
+                    for k in range(len(adjusted_seq) - 1)
+                )
+                trip_empty_mm = int(raw_dist_sub[0, kept_visits[0]])
+                trip_loaded_mm = trip_mm - trip_empty_mm
+                total_vmt_mm += trip_mm
+                total_empty_mm += trip_empty_mm
+                total_loaded_mm += trip_loaded_mm
+
+                trip_km = trip_mm / 1_000_000.0
+                empty_km = trip_empty_mm / 1_000_000.0
+                fuel = trip_km * vc.fuel_l_per_100km / 100.0
+                total_fuel_L += fuel
+                total_co2_kg += fuel * vc.co2_kg_per_liter
+
+                n_trip_pax = len(kept_visits)
+                if n_trip_pax <= 1:
+                    solo_trips += 1
+                else:
+                    shared_trips += 1
+
+                per_type[vtype_name]["served_commuters"] += n_trip_pax
+                per_type[vtype_name]["vmt_km"] += trip_km
+                per_type[vtype_name]["empty_km"] += empty_km
+
+                kept_commuter_ids = [commuters[i].id for i in kept_orig_ids]
+                kept_pickup_nodes = [commuters[i].origin_node for i in kept_orig_ids]
+                route_nodes_str = " ".join(map(str, kept_pickup_nodes + [station_node]))
+                route_rows.append({
+                    "av_type":                vtype_name,
+                    "av_id":                  route_id,
+                    "physical_id":            route_id,
+                    "trip_num":               trip_num,
+                    "station_node":           station_node,
+                    "pickup_order_commuters": " ".join(map(str, kept_commuter_ids)),
+                    "pickup_nodes":           " ".join(map(str, kept_pickup_nodes)),
+                    "route_nodes":            route_nodes_str,
+                })
+
+                for sub_i in kept_visits:
+                    total_pax_km += raw_dist_sub[sub_i, 0] / 1_000_000.0
+                    pickup_sec = pruned.pickup_times_sec.get(commuters[sub_to_orig[sub_i]].id)
+                    if pickup_sec is not None:
+                        ivt_sec = float(pruned.station_arrival_sec) - pickup_sec
+                        if ivt_sec >= 0:
+                            in_vehicle_times_sec.append(ivt_sec)
+
+                    direct_mm = int(raw_dist_sub[sub_i, 0])
+                    if direct_mm > 0:
+                        pax_pos = kept_visits.index(sub_i)
+                        seq_from = [sub_i] + kept_visits[pax_pos + 1:] + [0]
+                        actual_mm = sum(
+                            int(raw_dist_sub[seq_from[p], seq_from[p + 1]])
+                            for p in range(len(seq_from) - 1)
+                        )
+                        detour_ratios.append(actual_mm / direct_mm)
+
+            # ── assignments.csv — one row per raw solver-assigned commuter
+            for sub_i, orig_i in zip(trip_visits, trip_orig_ids):
+                c = commuters[orig_i]
+                cost_mm = int(raw_dist_sub[sub_i, 0])
+                dropoff_latest_sec = int(c.drop_off_latest_min * 60)
+                stop = next(s for s in trip_stops if s.commuter_id == c.id)
+                if c.id in kept_ids:
+                    station_arrival = pruned.station_arrival_sec
+                    shared_ids = [
+                        commuters[o].id for o in kept_orig_ids
+                        if o != orig_i
+                    ]
+                    status = "ASSIGNED"
+                    arrived_late = station_arrival > stop.station_deadline_sec
+                else:
+                    station_arrival = raw_station_arrival
+                    shared_ids = []
+                    status = "PRUNED_LATE"
+                    arrived_late = True
+                arrival_str = (
+                    f"{int(station_arrival)//3600:02d}:"
+                    f"{(int(station_arrival)%3600)//60:02d}"
+                )
+                delay_sec = max(0, int(station_arrival) - stop.station_deadline_sec)
 
                 assign_rows.append({
                     "commuter_id":            c.id,
@@ -847,18 +899,24 @@ def extract_results(
                     "direct_station_dist_mm": cost_mm,
                     "station_node":           station_node,
                     "path":                   f"{c.origin_node} {station_node}",
-                    "shared_with":            shared,
-                    "status":                 "ASSIGNED",
+                    "shared_with":            " ".join(map(str, shared_ids)),
+                    "status":                 status,
                     "station_arrival":        arrival_str,
                     "drop_off_latest":        f"{dropoff_latest_sec//3600:02d}:{(dropoff_latest_sec%3600)//60:02d}",
                     "arrived_late":           "YES" if arrived_late else "NO",
                     "delay_sec":              delay_sec,
                 })
 
-    # Unserved commuters
-    for orig_i in feasible_idx:
-        if orig_i not in served_orig_ids:
-            c = commuters[orig_i]
+        if route_has_adjusted_trip:
+            vehicles_used += 1
+            per_type[vtype_name]["vehicles_used"] += 1
+
+    # Unserved commuters, including those excluded before PyVRP model build.
+    raw_solver_assigned_commuter_ids = {
+        commuters[orig_i].id for orig_i in raw_solver_assigned_orig_ids
+    }
+    for c in original_commuters:
+        if c.id not in raw_solver_assigned_commuter_ids:
             assign_rows.append({
                 "commuter_id":            c.id,
                 "window_time":            "NONE",
@@ -896,7 +954,7 @@ def extract_results(
     # Report (C) as VMT in the paper; (A)=(B) is the validation check.
     solver_dist_m   = result.best.distance()
     extracted_pen_m = total_penalised_m
-    extracted_raw_m = total_vmt_mm / 1_000.0   # mm → metres
+    extracted_raw_m = raw_total_vmt_mm / 1_000.0   # mm → metres
     match_pct = 100.0 * extracted_pen_m / max(1, solver_dist_m)
 
     print(f"\n  Distance reconciliation (validation):")
@@ -912,8 +970,8 @@ def extract_results(
     # ── Late delivery summary ──────────────────────────────────────────
     served_count = len(served_orig_ids)
     print(f"\n  On-time delivery check:")
-    print(f"    Served:        {served_count}")
-    print(f"    On time:       {served_count - late_deliveries}")
+    print(f"    Raw assigned:  {len(raw_solver_assigned_orig_ids)}")
+    print(f"    Kept on time:  {served_count}")
     print(f"    Late arrivals: {late_deliveries}"
           + (f" ⚠" if late_deliveries > 0 else " ✓"))
     if late_deliveries > 0:
@@ -925,8 +983,25 @@ def extract_results(
     # Using feasible_idx size would make service_rate 100% for coarse
     # fixed-slot conditions that silently exclude infeasible commuters.
     total_commuters = original_count if original_count > 0 else len(feasible_idx)
-    unserved_count  = total_commuters - served_count
+    raw_solver_assigned_count = len(raw_solver_assigned_orig_ids)
+    raw_solver_unserved_count = total_commuters - raw_solver_assigned_count
+    unserved_count  = raw_solver_unserved_count
     total_vmt_km    = total_vmt_mm / 1_000_000.0
+    raw_total_vmt_km = raw_total_vmt_mm / 1_000_000.0
+    service_rate = round(100.0 * served_count / total_commuters, 2) if total_commuters else 0.0
+    raw_solver_on_time_count = raw_solver_assigned_count - raw_solver_late_deliveries
+    raw_solver_service_rate = (
+        round(100.0 * raw_solver_assigned_count / total_commuters, 2)
+        if total_commuters else 0.0
+    )
+    raw_solver_on_time_rate = (
+        round(100.0 * raw_solver_on_time_count / raw_solver_assigned_count, 2)
+        if raw_solver_assigned_count else 0.0
+    )
+    raw_solver_effective_on_time_service_rate = (
+        round(100.0 * raw_solver_on_time_count / total_commuters, 2)
+        if total_commuters else 0.0
+    )
 
     # ── Passenger-experience summary stats ─────────────────────────────
     n_ivt = len(in_vehicle_times_sec)
@@ -940,31 +1015,32 @@ def extract_results(
         "total_commuters":         total_commuters,
         "served_commuters":        served_count,
         "unserved_commuters":      unserved_count,
-        "service_rate":            round(100.0 * served_count / total_commuters, 2)
-                                   if total_commuters else 0.0,
+        "service_rate":            service_rate,
         "late_deliveries":         late_deliveries,
-        "on_time_deliveries":      served_count - late_deliveries,
-        "on_time_rate":            round(100.0 * (served_count - late_deliveries) / max(1, served_count), 2),
-        # on_time_rate is over served commuters; this is over total demand —
-        # the stricter metric for partial-service experiments
-        "effective_on_time_service_rate": round(
-            100.0 * (served_count - late_deliveries) / max(1, total_commuters), 2
-        ),
+        "on_time_deliveries":      served_count,
+        "on_time_rate":            round(100.0 * served_count / max(1, served_count), 2),
+        "effective_on_time_service_rate": service_rate,
+        "raw_solver_assigned_commuters": raw_solver_assigned_count,
+        "raw_solver_unserved_commuters": raw_solver_unserved_count,
+        "raw_solver_late_deliveries": raw_solver_late_deliveries,
+        "raw_solver_service_rate": raw_solver_service_rate,
+        "raw_solver_on_time_rate": raw_solver_on_time_rate,
+        "raw_solver_effective_on_time_service_rate": raw_solver_effective_on_time_service_rate,
         # total_* fields are compatibility aliases for current AV-only metrics.
         # system_* fields become the primary paper metrics once fallback VMT exists.
         "total_vmt_km":            round(total_vmt_km, 4),
-        "raw_av_total_vmt_km":     round(total_vmt_km, 4),
+        "raw_av_total_vmt_km":     round(raw_total_vmt_km, 4),
         "adjusted_av_total_vmt_km": round(total_vmt_km, 4),
         "system_total_vmt_km":     round(total_vmt_km, 4),
         "loaded_vmt_km":           round(total_loaded_mm / 1_000_000.0, 4),
         "empty_vmt_km":            round(total_empty_mm  / 1_000_000.0, 4),
         "empty_vmt_ratio":         round(total_empty_mm / max(1, total_vmt_mm), 4),
         "total_fuel_liters":       round(total_fuel_L, 4),
-        "raw_av_total_fuel_liters": round(total_fuel_L, 4),
+        "raw_av_total_fuel_liters": round(raw_total_fuel_L, 4),
         "adjusted_av_total_fuel_liters": round(total_fuel_L, 4),
         "system_total_fuel_liters": round(total_fuel_L, 4),
         "total_co2_kg":            round(total_co2_kg, 4),
-        "raw_av_total_co2_kg":     round(total_co2_kg, 4),
+        "raw_av_total_co2_kg":     round(raw_total_co2_kg, 4),
         "adjusted_av_total_co2_kg": round(total_co2_kg, 4),
         "system_total_co2_kg":     round(total_co2_kg, 4),
         "passenger_km":            round(total_pax_km, 4),
@@ -972,8 +1048,14 @@ def extract_results(
         "vehicle_trips":           vehicle_trips,
         "solo_trips":              solo_trips,
         "shared_trips":            shared_trips,
+        "pooling_rate":            round(100.0 * shared_trips / vehicle_trips, 2)
+                                   if vehicle_trips else 0.0,
         "avg_passengers_per_trip": round(served_count / vehicle_trips, 2)
                                    if vehicle_trips else 0.0,
+        "raw_vehicle_trips":       raw_vehicle_trips,
+        "raw_avg_passengers_per_trip": round(
+            raw_solver_assigned_count / raw_vehicle_trips, 2
+        ) if raw_vehicle_trips else 0.0,
         # ── Passenger-experience metrics (confirmation report Fig 2.4) ──
         # avg/max in-vehicle time: computed for commuters where schedule()
         # provided pickup timing; n_ivt <= served_count when timing unavailable.
@@ -1022,6 +1104,7 @@ def main():
     print(f"{'─'*40}\n  LOADING INPUTS\n{'─'*40}")
     cfg          = load_config(config_json)
     commuters    = load_commuters(commuters_csv)
+    original_commuters = list(commuters)
     station_node = load_station_node(stations_csv)
     original_count = len(commuters)
     print(f"  ✓ Config: {cfg.experiment_name}")
@@ -1135,7 +1218,7 @@ def main():
 
     # ── 6. Build PyVRP model ───────────────────────────────────────────
     print(f"\n{'─'*40}\n  BUILDING PyVRP MODEL\n{'─'*40}")
-    model, feasible_idx, cost_matrices = build_model(
+    model, feasible_idx, cost_matrices, duration_matrices = build_model(
         commuters, window_assignment, windows_sec, cfg,
         dist_m, dur_sec_by_speed, node_to_idx, station_idx
     )
@@ -1179,8 +1262,11 @@ def main():
                    seed=solver_seed)
 
     print(f"\n{'─'*40}\n  EXTRACTING RESULTS\n{'─'*40}")
-    # Build raw mm sub-matrix for metrics (distances in mm for VMT/fuel/CO2)
-    matrix_rows_full = [station_idx] + [node_to_idx[c.origin_node] for c in commuters]
+    # Build raw mm sub-matrix over feasible_idx so row/col indices stay aligned
+    # with PyVRP customer indices after any model-build exclusions.
+    matrix_rows_full = [station_idx] + [
+        node_to_idx[commuters[i].origin_node] for i in feasible_idx
+    ]
     idx_arr2 = np.array(matrix_rows_full, dtype=np.intp)
     raw_dist_mm_sub = dist_mm_raw[np.ix_(idx_arr2, idx_arr2)]
 
@@ -1203,9 +1289,10 @@ def main():
 
     metrics = extract_results(
         result, commuters, feasible_idx, window_assignment, windows_sec,
-        cfg, raw_dist_mm_sub, cost_matrices,
+        cfg, raw_dist_mm_sub, cost_matrices, duration_matrices,
         station_node, assignments_csv, av_routes_csv,
-        original_count=original_count
+        original_count=original_count,
+        original_commuters=original_commuters
     )
 
     # ── 9. Print summary ───────────────────────────────────────────────
