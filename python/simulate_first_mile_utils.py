@@ -345,6 +345,9 @@ def compare(av: dict, baseline: dict, name: str,
     vmt_change_pct = pct(av["total_vmt_km"], baseline["total_vmt_km"])
     fuel_change_pct = pct(av["total_fuel_liters"], baseline["total_fuel_liters"])
     co2_change_pct = pct(av["total_co2_kg"], baseline["total_co2_kg"])
+    system_vmt_change_pct = pct(system_vmt, baseline["total_vmt_km"])
+    system_fuel_change_pct = pct(system_fuel, baseline["total_fuel_liters"])
+    system_co2_change_pct = pct(system_co2, baseline["total_co2_kg"])
     out = {
         "experiment_name":           name,
         "seed":                      seed,
@@ -372,12 +375,17 @@ def compare(av: dict, baseline: dict, name: str,
         "adjusted_av_total_vmt_km":      adjusted_av_vmt,
         "adjusted_av_total_fuel_liters": adjusted_av_fuel,
         "adjusted_av_total_co2_kg":      adjusted_av_co2,
+        "fallback_private_car_vmt_km": av.get("fallback_private_car_vmt_km", 0.0),
+        "fallback_private_car_fuel_liters": av.get("fallback_private_car_fuel_liters", 0.0),
+        "fallback_private_car_co2_kg": av.get("fallback_private_car_co2_kg", 0.0),
+        "fallback_private_car_avg_trip_km": av.get("fallback_private_car_avg_trip_km", 0.0),
+        "fallback_private_car_share_pct": av.get("fallback_private_car_share_pct", 0.0),
         "system_total_vmt_km":       system_vmt,
         "system_total_fuel_liters":  system_fuel,
         "system_total_co2_kg":       system_co2,
-        "system_vmt_change_pct":     vmt_change_pct,
-        "system_fuel_change_pct":    fuel_change_pct,
-        "system_co2_change_pct":     co2_change_pct,
+        "system_vmt_change_pct":     system_vmt_change_pct,
+        "system_fuel_change_pct":    system_fuel_change_pct,
+        "system_co2_change_pct":     system_co2_change_pct,
         "avg_passengers_per_trip":   av["avg_passengers_per_trip"],
         "vehicles_used":             av["vehicles_used"],
         "vehicle_trips":             av["vehicle_trips"],

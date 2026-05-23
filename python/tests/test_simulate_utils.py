@@ -196,6 +196,9 @@ def test_calculate_baseline_and_compare():
 
     # compare
     av = {"total_vmt_km": 2.4, "total_fuel_liters": 0.192, "total_co2_kg": 0.4416,
+          "system_total_vmt_km": 3.0, "system_total_fuel_liters": 0.24, "system_total_co2_kg": 0.552,
+          "fallback_private_car_vmt_km": 0.6, "fallback_private_car_fuel_liters": 0.048, "fallback_private_car_co2_kg": 0.1104,
+          "fallback_private_car_avg_trip_km": 0.6, "fallback_private_car_share_pct": 50.0,
           "service_rate": 100.0, "on_time_rate": 100.0, "late_deliveries": 0,
           "avg_passengers_per_trip":1.0, "vehicles_used":1, "vehicle_trips":2,
           "solo_trips":2, "shared_trips":0, "avg_in_vehicle_time_min":0.0, "max_in_vehicle_time_min":0.0, "avg_detour_ratio":1.0, "max_detour_ratio":1.0,
@@ -208,16 +211,18 @@ def test_calculate_baseline_and_compare():
     assert isinstance(comp["vmt_change_pct"], float)
     assert comp["raw_av_total_vmt_km"] == av["total_vmt_km"]
     assert comp["adjusted_av_total_vmt_km"] == av["total_vmt_km"]
-    assert comp["system_total_vmt_km"] == av["total_vmt_km"]
+    assert comp["system_total_vmt_km"] == av["system_total_vmt_km"]
     assert comp["raw_av_total_fuel_liters"] == av["total_fuel_liters"]
     assert comp["adjusted_av_total_fuel_liters"] == av["total_fuel_liters"]
-    assert comp["system_total_fuel_liters"] == av["total_fuel_liters"]
+    assert comp["system_total_fuel_liters"] == av["system_total_fuel_liters"]
     assert comp["raw_av_total_co2_kg"] == av["total_co2_kg"]
     assert comp["adjusted_av_total_co2_kg"] == av["total_co2_kg"]
-    assert comp["system_total_co2_kg"] == av["total_co2_kg"]
-    assert comp["system_vmt_change_pct"] == comp["vmt_change_pct"]
-    assert comp["system_fuel_change_pct"] == comp["fuel_change_pct"]
-    assert comp["system_co2_change_pct"] == comp["co2_change_pct"]
+    assert comp["system_total_co2_kg"] == av["system_total_co2_kg"]
+    assert comp["fallback_private_car_vmt_km"] == av["fallback_private_car_vmt_km"]
+    assert comp["vmt_change_pct"] == -20.0
+    assert comp["system_vmt_change_pct"] == 0.0
+    assert comp["system_fuel_change_pct"] == 0.0
+    assert comp["system_co2_change_pct"] == 0.0
     assert PARKING_FIELDS.issubset(comp)
     assert comp["fleet_storage_equiv_spaces"] == 1.0
 

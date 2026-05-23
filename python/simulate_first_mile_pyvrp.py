@@ -553,7 +553,8 @@ def extract_results(
         assignments_csv: str,
         av_routes_csv: str,
         original_count: int = 0,
-        original_commuters: Optional[List[Commuter]] = None) -> dict:
+        original_commuters: Optional[List[Commuter]] = None,
+        direct_station_dist_mm_by_commuter_id: Optional[Dict[int, int]] = None) -> dict:
     """
     Parse PyVRP routes and write output CSVs matching your existing format:
 
@@ -569,6 +570,25 @@ def extract_results(
     routes = result.best.routes()
     if original_commuters is None:
         original_commuters = commuters
+    if direct_station_dist_mm_by_commuter_id is None:
+        raise ValueError(
+            "direct_station_dist_mm_by_commuter_id is required because "
+            "fallback commuters may be outside the PyVRP submatrix"
+        )
+
+    def direct_station_dist_mm(commuter_id: int) -> int:
+        try:
+            dist_mm = int(direct_station_dist_mm_by_commuter_id[commuter_id])
+        except KeyError as exc:
+            raise KeyError(
+                f"Missing direct station distance for commuter_id={commuter_id}"
+            ) from exc
+        if dist_mm < 0 or dist_mm >= 1_000_000_000:
+            raise ValueError(
+                f"Invalid direct station distance for commuter_id={commuter_id}: "
+                f"{dist_mm} mm"
+            )
+        return dist_mm
 
     # Map sub-matrix index (1-based) → original commuter index
     # sub-index 0 = depot, 1..n = commuters in feasible_idx order
@@ -586,6 +606,7 @@ def extract_results(
     raw_total_co2_kg        = 0.0
     raw_vehicle_trips       = 0
     raw_solver_late_deliveries = 0
+    fallback_private_car_vmt_mm = 0
     total_vmt_mm        = 0
     total_penalised_m   = 0
     total_empty_mm      = 0
@@ -869,7 +890,6 @@ def extract_results(
             # ── assignments.csv — one row per raw solver-assigned commuter
             for sub_i, orig_i in zip(trip_visits, trip_orig_ids):
                 c = commuters[orig_i]
-                cost_mm = int(raw_dist_sub[sub_i, 0])
                 dropoff_latest_sec = int(c.drop_off_latest_min * 60)
                 stop = next(s for s in trip_stops if s.commuter_id == c.id)
                 if c.id in kept_ids:
@@ -885,18 +905,20 @@ def extract_results(
                     shared_ids = []
                     status = "PRUNED_LATE"
                     arrived_late = True
+                    fallback_private_car_vmt_mm += direct_station_dist_mm(c.id)
                 arrival_str = (
                     f"{int(station_arrival)//3600:02d}:"
                     f"{(int(station_arrival)%3600)//60:02d}"
                 )
                 delay_sec = max(0, int(station_arrival) - stop.station_deadline_sec)
+                direct_mm = direct_station_dist_mm(c.id)
 
                 assign_rows.append({
                     "commuter_id":            c.id,
                     "window_time":            w_str,
                     "av_type":                vtype_name,
                     "av_id":                  route_id,
-                    "direct_station_dist_mm": cost_mm,
+                    "direct_station_dist_mm": direct_mm,
                     "station_node":           station_node,
                     "path":                   f"{c.origin_node} {station_node}",
                     "shared_with":            " ".join(map(str, shared_ids)),
@@ -917,10 +939,12 @@ def extract_results(
     }
     for c in original_commuters:
         if c.id not in raw_solver_assigned_commuter_ids:
+            direct_mm = direct_station_dist_mm(c.id)
+            fallback_private_car_vmt_mm += direct_mm
             assign_rows.append({
                 "commuter_id":            c.id,
                 "window_time":            "NONE",
-                "av_type": "", "av_id": "", "direct_station_dist_mm": "",
+                "av_type": "", "av_id": "", "direct_station_dist_mm": direct_mm,
                 "station_node":           station_node,
                 "path": "", "shared_with": "", "status": "UNSERVED",
                 "station_arrival": "", "drop_off_latest": "", "arrived_late": "", "delay_sec": "",
@@ -988,6 +1012,25 @@ def extract_results(
     unserved_count  = raw_solver_unserved_count
     total_vmt_km    = total_vmt_mm / 1_000_000.0
     raw_total_vmt_km = raw_total_vmt_mm / 1_000_000.0
+    fallback_private_cars = unserved_count + late_deliveries
+    fallback_private_car_vmt_km = fallback_private_car_vmt_mm / 1_000_000.0
+    fallback_private_car_fuel_liters = (
+        fallback_private_car_vmt_km * cfg.private_car_fuel_l_per_100km / 100.0
+    )
+    fallback_private_car_co2_kg = (
+        fallback_private_car_fuel_liters * cfg.private_car_co2_kg_per_liter
+    )
+    fallback_private_car_avg_trip_km = (
+        fallback_private_car_vmt_km / fallback_private_cars
+        if fallback_private_cars else 0.0
+    )
+    fallback_private_car_share_pct = (
+        100.0 * fallback_private_cars / total_commuters
+        if total_commuters else 0.0
+    )
+    system_total_vmt_km = total_vmt_km + fallback_private_car_vmt_km
+    system_total_fuel_liters = total_fuel_L + fallback_private_car_fuel_liters
+    system_total_co2_kg = total_co2_kg + fallback_private_car_co2_kg
     service_rate = round(100.0 * served_count / total_commuters, 2) if total_commuters else 0.0
     raw_solver_on_time_count = raw_solver_assigned_count - raw_solver_late_deliveries
     raw_solver_service_rate = (
@@ -1015,6 +1058,7 @@ def extract_results(
         "total_commuters":         total_commuters,
         "served_commuters":        served_count,
         "unserved_commuters":      unserved_count,
+        "fallback_private_cars":   fallback_private_cars,
         "service_rate":            service_rate,
         "late_deliveries":         late_deliveries,
         "on_time_deliveries":      served_count,
@@ -1031,18 +1075,23 @@ def extract_results(
         "total_vmt_km":            round(total_vmt_km, 4),
         "raw_av_total_vmt_km":     round(raw_total_vmt_km, 4),
         "adjusted_av_total_vmt_km": round(total_vmt_km, 4),
-        "system_total_vmt_km":     round(total_vmt_km, 4),
+        "fallback_private_car_vmt_km": round(fallback_private_car_vmt_km, 4),
+        "system_total_vmt_km":     round(system_total_vmt_km, 4),
         "loaded_vmt_km":           round(total_loaded_mm / 1_000_000.0, 4),
         "empty_vmt_km":            round(total_empty_mm  / 1_000_000.0, 4),
         "empty_vmt_ratio":         round(total_empty_mm / max(1, total_vmt_mm), 4),
         "total_fuel_liters":       round(total_fuel_L, 4),
         "raw_av_total_fuel_liters": round(raw_total_fuel_L, 4),
         "adjusted_av_total_fuel_liters": round(total_fuel_L, 4),
-        "system_total_fuel_liters": round(total_fuel_L, 4),
+        "fallback_private_car_fuel_liters": round(fallback_private_car_fuel_liters, 4),
+        "system_total_fuel_liters": round(system_total_fuel_liters, 4),
         "total_co2_kg":            round(total_co2_kg, 4),
         "raw_av_total_co2_kg":     round(raw_total_co2_kg, 4),
         "adjusted_av_total_co2_kg": round(total_co2_kg, 4),
-        "system_total_co2_kg":     round(total_co2_kg, 4),
+        "fallback_private_car_co2_kg": round(fallback_private_car_co2_kg, 4),
+        "system_total_co2_kg":     round(system_total_co2_kg, 4),
+        "fallback_private_car_avg_trip_km": round(fallback_private_car_avg_trip_km, 4),
+        "fallback_private_car_share_pct": round(fallback_private_car_share_pct, 2),
         "passenger_km":            round(total_pax_km, 4),
         "vehicles_used":           vehicles_used,
         "vehicle_trips":           vehicle_trips,
@@ -1121,6 +1170,15 @@ def main():
     # Build node → matrix index lookup
     node_to_idx = {n: i for i, n in enumerate(nodes)}
     station_idx = node_to_idx[station_node]
+    direct_station_dist_mm_by_commuter_id = {}
+    for c in original_commuters:
+        if c.origin_node not in node_to_idx:
+            raise KeyError(
+                f"Missing origin node {c.origin_node} for commuter_id={c.id}"
+            )
+        direct_station_dist_mm_by_commuter_id[c.id] = int(
+            dist_mm_raw[node_to_idx[c.origin_node], station_idx]
+        )
 
     # ── 3. Filter unreachable commuters ────────────────────────────────
     print(f"\n{'─'*40}\n  CHECKING REACHABILITY\n{'─'*40}")
@@ -1292,7 +1350,8 @@ def main():
         cfg, raw_dist_mm_sub, cost_matrices, duration_matrices,
         station_node, assignments_csv, av_routes_csv,
         original_count=original_count,
-        original_commuters=original_commuters
+        original_commuters=original_commuters,
+        direct_station_dist_mm_by_commuter_id=direct_station_dist_mm_by_commuter_id
     )
 
     # ── 9. Print summary ───────────────────────────────────────────────
