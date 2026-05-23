@@ -116,6 +116,18 @@ def test_calculate_baseline_and_compare():
     comp = compare(av, baseline, "exp", seed=1, cfg=cfg)
     assert "vmt_change_pct" in comp
     assert isinstance(comp["vmt_change_pct"], float)
+    assert comp["raw_av_total_vmt_km"] == av["total_vmt_km"]
+    assert comp["adjusted_av_total_vmt_km"] == av["total_vmt_km"]
+    assert comp["system_total_vmt_km"] == av["total_vmt_km"]
+    assert comp["raw_av_total_fuel_liters"] == av["total_fuel_liters"]
+    assert comp["adjusted_av_total_fuel_liters"] == av["total_fuel_liters"]
+    assert comp["system_total_fuel_liters"] == av["total_fuel_liters"]
+    assert comp["raw_av_total_co2_kg"] == av["total_co2_kg"]
+    assert comp["adjusted_av_total_co2_kg"] == av["total_co2_kg"]
+    assert comp["system_total_co2_kg"] == av["total_co2_kg"]
+    assert comp["system_vmt_change_pct"] == comp["vmt_change_pct"]
+    assert comp["system_fuel_change_pct"] == comp["fuel_change_pct"]
+    assert comp["system_co2_change_pct"] == comp["co2_change_pct"]
     assert PARKING_FIELDS.issubset(comp)
     assert comp["fleet_storage_equiv_spaces"] == 1.0
 

@@ -223,6 +223,18 @@ def compare(av: dict, baseline: dict, name: str,
             seed: int = 0, cfg: "ExperimentConfig | None" = None) -> dict:
     def pct(av_v, base_v):
         return round((av_v - base_v) / base_v * 100.0, 2) if base_v else 0.0
+    raw_av_vmt = av.get("raw_av_total_vmt_km", av["total_vmt_km"])
+    raw_av_fuel = av.get("raw_av_total_fuel_liters", av["total_fuel_liters"])
+    raw_av_co2 = av.get("raw_av_total_co2_kg", av["total_co2_kg"])
+    adjusted_av_vmt = av.get("adjusted_av_total_vmt_km", av["total_vmt_km"])
+    adjusted_av_fuel = av.get("adjusted_av_total_fuel_liters", av["total_fuel_liters"])
+    adjusted_av_co2 = av.get("adjusted_av_total_co2_kg", av["total_co2_kg"])
+    system_vmt = av.get("system_total_vmt_km", av["total_vmt_km"])
+    system_fuel = av.get("system_total_fuel_liters", av["total_fuel_liters"])
+    system_co2 = av.get("system_total_co2_kg", av["total_co2_kg"])
+    vmt_change_pct = pct(av["total_vmt_km"], baseline["total_vmt_km"])
+    fuel_change_pct = pct(av["total_fuel_liters"], baseline["total_fuel_liters"])
+    co2_change_pct = pct(av["total_co2_kg"], baseline["total_co2_kg"])
     out = {
         "experiment_name":           name,
         "seed":                      seed,
@@ -232,13 +244,25 @@ def compare(av: dict, baseline: dict, name: str,
         "service_rate_pct":          av["service_rate"],
         "on_time_rate_pct":          av["on_time_rate"],
         "late_deliveries":           av["late_deliveries"],
-        "vmt_change_pct":            pct(av["total_vmt_km"],      baseline["total_vmt_km"]),
-        "fuel_change_pct":           pct(av["total_fuel_liters"],  baseline["total_fuel_liters"]),
-        "co2_change_pct":            pct(av["total_co2_kg"],       baseline["total_co2_kg"]),
+        "vmt_change_pct":            vmt_change_pct,
+        "fuel_change_pct":           fuel_change_pct,
+        "co2_change_pct":            co2_change_pct,
         "av_total_vmt_km":           av["total_vmt_km"],
         "baseline_total_vmt_km":     baseline["total_vmt_km"],
         "av_total_co2_kg":           av["total_co2_kg"],
         "baseline_total_co2_kg":     baseline["total_co2_kg"],
+        "raw_av_total_vmt_km":       raw_av_vmt,
+        "raw_av_total_fuel_liters":  raw_av_fuel,
+        "raw_av_total_co2_kg":       raw_av_co2,
+        "adjusted_av_total_vmt_km":      adjusted_av_vmt,
+        "adjusted_av_total_fuel_liters": adjusted_av_fuel,
+        "adjusted_av_total_co2_kg":      adjusted_av_co2,
+        "system_total_vmt_km":       system_vmt,
+        "system_total_fuel_liters":  system_fuel,
+        "system_total_co2_kg":       system_co2,
+        "system_vmt_change_pct":     vmt_change_pct,
+        "system_fuel_change_pct":    fuel_change_pct,
+        "system_co2_change_pct":     co2_change_pct,
         "avg_passengers_per_trip":   av["avg_passengers_per_trip"],
         "vehicles_used":             av["vehicles_used"],
         "vehicle_trips":             av["vehicle_trips"],

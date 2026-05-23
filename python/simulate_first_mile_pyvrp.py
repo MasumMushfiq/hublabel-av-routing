@@ -950,12 +950,23 @@ def extract_results(
         "effective_on_time_service_rate": round(
             100.0 * (served_count - late_deliveries) / max(1, total_commuters), 2
         ),
+        # total_* fields are compatibility aliases for current AV-only metrics.
+        # system_* fields become the primary paper metrics once fallback VMT exists.
         "total_vmt_km":            round(total_vmt_km, 4),
+        "raw_av_total_vmt_km":     round(total_vmt_km, 4),
+        "adjusted_av_total_vmt_km": round(total_vmt_km, 4),
+        "system_total_vmt_km":     round(total_vmt_km, 4),
         "loaded_vmt_km":           round(total_loaded_mm / 1_000_000.0, 4),
         "empty_vmt_km":            round(total_empty_mm  / 1_000_000.0, 4),
         "empty_vmt_ratio":         round(total_empty_mm / max(1, total_vmt_mm), 4),
         "total_fuel_liters":       round(total_fuel_L, 4),
+        "raw_av_total_fuel_liters": round(total_fuel_L, 4),
+        "adjusted_av_total_fuel_liters": round(total_fuel_L, 4),
+        "system_total_fuel_liters": round(total_fuel_L, 4),
         "total_co2_kg":            round(total_co2_kg, 4),
+        "raw_av_total_co2_kg":     round(total_co2_kg, 4),
+        "adjusted_av_total_co2_kg": round(total_co2_kg, 4),
+        "system_total_co2_kg":     round(total_co2_kg, 4),
         "passenger_km":            round(total_pax_km, 4),
         "vehicles_used":           vehicles_used,
         "vehicle_trips":           vehicle_trips,
