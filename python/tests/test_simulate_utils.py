@@ -25,9 +25,12 @@ from simulate_first_mile_utils import (
     calculate_parking_metrics,
     compare,
     Commuter,
+    TripStop,
     TimeWindowConfig,
     VehicleConfig,
     ExperimentConfig,
+    iteratively_prune_late_commuters,
+    recompute_trip_timing,
 )
 
 
@@ -87,6 +90,93 @@ def test_assign_latest_feasible_window_and_individual():
     ind = assign_individual_windows(commuters, dur, node_to_idx, station_idx=0)
     assert ind[0][0] == 7*3600
     assert ind[1] == (-1, -1)
+
+
+def make_trip_stop(commuter_id, matrix_idx, deadline, original_pickup=100, earliest=0):
+    return TripStop(
+        commuter_id=commuter_id,
+        matrix_idx=matrix_idx,
+        pickup_earliest_sec=earliest,
+        pickup_latest_sec=10_000,
+        station_deadline_sec=deadline,
+        original_pickup_time_sec=original_pickup,
+    )
+
+
+def test_prune_no_late_commuters():
+    dur = np.array([[0, 10, 20], [10, 0, 5], [20, 5, 0]])
+    stops = [
+        make_trip_stop(1, 1, deadline=130),
+        make_trip_stop(2, 2, deadline=130),
+    ]
+    result = iteratively_prune_late_commuters(stops, dur)
+    assert [s.commuter_id for s in result.kept_stops] == [1, 2]
+    assert result.removed_late_stops == []
+    assert result.station_arrival_sec == 125
+    assert result.iterations == 0
+
+
+def test_prune_one_late_commuter_keeps_other_after_recompute():
+    dur = np.array([[0, 10, 50], [10, 0, 50], [50, 50, 0]])
+    stops = [
+        make_trip_stop(1, 1, deadline=220),
+        make_trip_stop(2, 2, deadline=180),
+    ]
+    result = iteratively_prune_late_commuters(stops, dur)
+    assert [s.commuter_id for s in result.removed_late_stops] == [2]
+    assert [s.commuter_id for s in result.kept_stops] == [1]
+    assert result.station_arrival_sec == 110
+
+
+def test_prune_iterative_rescue_keeps_newly_on_time_commuter():
+    dur = np.array([[0, 10, 10], [10, 0, 80], [10, 80, 0]])
+    stops = [
+        make_trip_stop(1, 1, deadline=150, original_pickup=100),
+        make_trip_stop(2, 2, deadline=185, original_pickup=100),
+    ]
+    initial = recompute_trip_timing(stops, dur)
+    assert initial.station_arrival_sec == 190
+
+    result = iteratively_prune_late_commuters(stops, dur)
+    assert [s.commuter_id for s in result.removed_late_stops] == [1]
+    assert [s.commuter_id for s in result.kept_stops] == [2]
+    assert result.station_arrival_sec == 110
+    assert result.iterations == 1
+
+
+def test_prune_single_commuter_late_trip():
+    dur = np.array([[0, 10], [10, 0]])
+    stops = [make_trip_stop(1, 1, deadline=105)]
+    result = iteratively_prune_late_commuters(stops, dur)
+    assert [s.commuter_id for s in result.removed_late_stops] == [1]
+    assert result.kept_stops == []
+    assert result.pickup_times_sec == {}
+    assert result.station_arrival_sec == 0
+
+
+def test_prune_identical_origin_commuters():
+    dur = np.array([[0, 10], [10, 0]])
+    stops = [
+        make_trip_stop(1, 1, deadline=120, earliest=100),
+        make_trip_stop(2, 1, deadline=120, earliest=105),
+    ]
+    result = iteratively_prune_late_commuters(stops, dur)
+    assert [s.commuter_id for s in result.kept_stops] == [1, 2]
+    assert result.pickup_times_sec == {1: 100, 2: 105}
+    assert result.station_arrival_sec == 115
+
+
+def test_prune_pickup_earliest_waiting_after_pruning():
+    dur = np.array([[0, 10, 10], [10, 0, 5], [10, 5, 0]])
+    stops = [
+        make_trip_stop(1, 1, deadline=150, original_pickup=100),
+        make_trip_stop(2, 2, deadline=220, original_pickup=90, earliest=200),
+    ]
+    result = iteratively_prune_late_commuters(stops, dur)
+    assert [s.commuter_id for s in result.removed_late_stops] == [1]
+    assert [s.commuter_id for s in result.kept_stops] == [2]
+    assert result.pickup_times_sec[2] == 200
+    assert result.station_arrival_sec == 210
 
 
 def test_calculate_baseline_and_compare():

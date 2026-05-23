@@ -57,6 +57,116 @@ class ExperimentConfig:
     preference_scale_m: int = 500
 
 
+@dataclass
+class TripStop:
+    commuter_id: int
+    matrix_idx: int
+    pickup_earliest_sec: int
+    pickup_latest_sec: int
+    station_deadline_sec: int
+    original_pickup_time_sec: int
+
+
+@dataclass
+class TripTimingResult:
+    kept_stops: List[TripStop]
+    pickup_times_sec: Dict[int, int]
+    station_arrival_sec: int
+    total_duration_sec: int
+
+
+@dataclass
+class PrunedTripResult:
+    kept_stops: List[TripStop]
+    removed_late_stops: List[TripStop]
+    pickup_times_sec: Dict[int, int]
+    station_arrival_sec: int
+    iterations: int
+
+
+def recompute_trip_timing(
+        stops: List[TripStop],
+        duration_matrix_sec,
+        depot_idx: int = 0) -> TripTimingResult:
+    if not stops:
+        return TripTimingResult([], {}, 0, 0)
+
+    first = stops[0]
+    trip_start_time = (
+        first.original_pickup_time_sec
+        - int(duration_matrix_sec[depot_idx, first.matrix_idx])
+    )
+    current_time = trip_start_time
+    current_location = depot_idx
+    pickup_times_sec = {}
+
+    for stop in stops:
+        arrival_at_origin = (
+            current_time
+            + int(duration_matrix_sec[current_location, stop.matrix_idx])
+        )
+        pickup_time = max(arrival_at_origin, stop.pickup_earliest_sec)
+        pickup_times_sec[stop.commuter_id] = pickup_time
+        current_time = pickup_time
+        current_location = stop.matrix_idx
+
+    station_arrival_sec = (
+        current_time
+        + int(duration_matrix_sec[current_location, depot_idx])
+    )
+    return TripTimingResult(
+        kept_stops=list(stops),
+        pickup_times_sec=pickup_times_sec,
+        station_arrival_sec=station_arrival_sec,
+        total_duration_sec=station_arrival_sec - trip_start_time,
+    )
+
+
+def iteratively_prune_late_commuters(
+        stops: List[TripStop],
+        duration_matrix_sec,
+        depot_idx: int = 0) -> PrunedTripResult:
+    """Remove late stops one at a time, recomputing timing after each prune.
+
+    The tightest-deadline late stop is removed first. This is intentional to
+    avoid over-pruning: removing one stop may make other initially late stops
+    feasible after the route timing is replayed.
+    """
+    remaining = list(stops)
+    removed = []
+    timing = recompute_trip_timing(remaining, duration_matrix_sec, depot_idx)
+    iterations = 0
+    max_iterations = len(remaining)
+
+    while remaining and iterations < max_iterations:
+        late_stops = [
+            stop for stop in remaining
+            if timing.station_arrival_sec > stop.station_deadline_sec
+        ]
+        if not late_stops:
+            break
+
+        tightest_late_stop = min(
+            late_stops,
+            key=lambda stop: (stop.station_deadline_sec, stop.commuter_id),
+        )
+        removed.append(tightest_late_stop)
+        remaining = [
+            stop for stop in remaining
+            if stop.commuter_id != tightest_late_stop.commuter_id
+        ]
+        iterations += 1
+        timing = recompute_trip_timing(remaining, duration_matrix_sec, depot_idx)
+
+    return PrunedTripResult(
+        kept_stops=timing.kept_stops,
+        removed_late_stops=removed,
+        pickup_times_sec=timing.pickup_times_sec,
+        station_arrival_sec=timing.station_arrival_sec,
+        iterations=iterations,
+    )
+
+
 def parking_equiv_for_vehicle_type(name: str) -> float:
     normalized = "".join(ch for ch in name.lower() if ch.isalnum())
     if "minibus" in normalized or "minivan" in normalized or "shuttle" in normalized:
