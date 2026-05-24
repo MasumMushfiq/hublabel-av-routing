@@ -67,11 +67,15 @@ files/inputs/
 dataset/
 
 # ─────────────────────────────────────────────
-# Experiment generated results
+# Experiments
 # ─────────────────────────────────────────────
-experiments/**/results/
-experiments_ortools/**/results/
-experiments_testing_phase/**/results/
+
+# Ignore everything in experiments by default.
+experiments/*
+
+# Keep only experiment scripts for now.
+!experiments/scripts/
+!experiments/scripts/**
 
 # These older experiment folders look local/generated.
 # Remove these two lines later if you want to version cleaned scripts/configs from them.

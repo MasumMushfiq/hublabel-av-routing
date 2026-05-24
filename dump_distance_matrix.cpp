@@ -216,8 +216,8 @@ int main(int argc, char** argv) {
     for (int n : commuter_nodes) all_nodes.push_back(n);
 
     // 5. Vehicle speeds to compute duration matrices for
-    // Match your config: Scooter=30, Moped=45, Minibus=70, Car=80
-    std::vector<double> speeds = {30.0, 45.0, 70.0, 80.0};
+    // Match your config: Scooter=25, Moped=45, Minibus=70, Car=80
+    std::vector<double> speeds = {25.0, 30.0, 45.0, 70.0, 80.0};
 
     // 6. Allocate matrices
     std::vector<int64_t> dist_mm(M * M, 0);
