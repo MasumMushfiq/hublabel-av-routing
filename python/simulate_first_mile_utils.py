@@ -2,8 +2,8 @@
 simulate_first_mile_utils.py
 Utility functions extracted from simulate_first_mile_pyvrp.py for unit testing.
 """
-from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional
+from dataclasses import dataclass, field
+from typing import List, Dict, Tuple, Optional, Union
 import numpy as np
 
 PARKING_EQUIV_BY_VEHICLE_TYPE = {
@@ -43,6 +43,45 @@ class TimeWindowConfig:
     buffer_before_deadline_sec: float
 
 @dataclass
+class CostModel:
+    """
+    Cost parameters for post-simulation fleet comparison.
+
+    All monetary values are in AUD.  These are evaluation-only: they do not
+    affect the PyVRP solver objective or routing decisions.
+
+    Fields
+    ------
+    fuel_price_per_liter : float | dict[str, float]
+        Fuel price in AUD/litre.  Either a single value applied uniformly to
+        all vehicle types, or per-vehicle-type values keyed by type name.
+        Default: 0.0 (cost disabled / placeholder).
+    fixed_cost_per_vehicle : dict[str, float]
+        AUD fixed cost per vehicle per service period (e.g. per day), keyed
+        by vehicle type name.  Represents lease, depreciation, insurance, or
+        any fleet-commitment overhead.  Applied to configured fleet counts,
+        not just used vehicles, because available vehicles still represent
+        a committed resource.  Missing names fall back to 0.0.
+    maintenance_cost_per_km : dict[str, float]
+        AUD per km driven, keyed by vehicle type name.  Applied to the
+        adjusted (post-pruning) AV VMT per type.  Missing names fall back
+        to 0.0.
+    """
+    fuel_price_per_liter: Union[float, Dict[str, float]] = 0.0
+    fixed_cost_per_vehicle: Dict[str, float] = field(default_factory=dict)
+    maintenance_cost_per_km: Dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if isinstance(self.fuel_price_per_liter, dict):
+            self.fuel_price_per_liter = {
+                str(k): float(v)
+                for k, v in self.fuel_price_per_liter.items()
+            }
+        else:
+            self.fuel_price_per_liter = float(self.fuel_price_per_liter or 0.0)
+
+
+@dataclass
 class ExperimentConfig:
     experiment_name: str
     vehicle_types: List[VehicleConfig]
@@ -55,6 +94,7 @@ class ExperimentConfig:
     private_car_speed_kmph: float
     penalty_mode: str = "multiplicative"
     preference_scale_m: int = 500
+    cost_model: Optional[CostModel] = None
 
 
 @dataclass
@@ -209,6 +249,129 @@ def calculate_parking_metrics(av: dict, cfg: ExperimentConfig) -> dict:
         "fleet_storage_equiv_spaces": round(fleet_storage_equiv_spaces, 4),
         "net_parking_equiv_if_fleet_stored_at_station": round(net_parking_equiv, 4),
         "net_parking_reduction_pct_if_fleet_stored_at_station": round(net_reduction_pct, 2),
+    }
+
+
+COST_METRIC_FIELDS = {
+    "av_fleet_fixed_cost",
+    "av_distance_operating_cost",
+    "av_fuel_cost",
+    "av_total_operating_cost",
+    "av_cost_per_commuter_total",
+    "av_cost_per_served_commuter",
+    "av_cost_per_passenger_km",
+    "av_cost_per_vehicle_km",
+    "av_cost_by_vehicle_type",
+}
+
+
+def calculate_cost_metrics(av: dict, cfg: "ExperimentConfig") -> dict:
+    """
+    Compute evaluation-only cost metrics for comparing AV fleet compositions.
+
+    This function does NOT affect solver behaviour.  It is called after route
+    extraction and late-commuter pruning, consuming adjusted (post-pruning)
+    AV metrics.
+
+    Cost components
+    ---------------
+    Fixed fleet cost:
+        Σ fleet_size(k) × fixed_cost_per_vehicle(k)
+        Uses configured fleet counts — available vehicles represent a committed
+        resource even if not all are dispatched in every run.
+
+    Distance operating cost (maintenance / wear):
+        Σ_k  adjusted_vmt_km(k) × maintenance_cost_per_km(k)
+        Uses per-vehicle-type adjusted VMT from per_vehicle_type in av dict.
+
+    Fuel cost:
+        Σ_k adjusted_vmt_km(k) × fuel_l_per_100km(k) / 100 × fuel_price(k)
+        Uses per-vehicle-type adjusted VMT from per_vehicle_type in av dict.
+
+    All monetary values are in AUD.  When cost_model is None or all rates
+    are zero, every cost field is 0.0 — the pipeline stays valid and the
+    fields can be filled in later without rerunning the solver.
+
+    Normalisation denominators
+    --------------------------
+    av_cost_per_commuter_total  : total_commuters  (original demand)
+    av_cost_per_served_commuter : served_commuters (on-time AV-served after pruning)
+    av_cost_per_passenger_km    : passenger_km
+    av_cost_per_vehicle_km      : adjusted_av_total_vmt_km
+    """
+    cm = cfg.cost_model  # may be None
+
+    fixed_cost_per_vehicle  = cm.fixed_cost_per_vehicle  if cm else {}
+    maintenance_cost_per_km = cm.maintenance_cost_per_km if cm else {}
+    fuel_price              = cm.fuel_price_per_liter     if cm else 0.0
+
+    def _fuel_price_for(name: str) -> float:
+        if isinstance(fuel_price, dict):
+            return float(fuel_price.get(name, 0.0))
+        return float(fuel_price)
+
+    # ── Per-vehicle-type breakdown ─────────────────────────────────────
+    per_vtype_cost: Dict[str, dict] = {}
+    total_fixed = 0.0
+    total_maint = 0.0
+    total_fuel_cost = 0.0
+
+    per_vehicle_type: Dict[str, dict] = av.get("per_vehicle_type", {})
+
+    for vc in cfg.vehicle_types:
+        name    = vc.name
+        n_fleet = vc.fleet_size
+        vmt_km  = per_vehicle_type.get(name, {}).get("vmt_km", 0.0)
+
+        fixed_rate = fixed_cost_per_vehicle.get(name, 0.0)
+        maint_rate = maintenance_cost_per_km.get(name, 0.0)
+        fuel_price_for_type = _fuel_price_for(name)
+
+        fixed = round(n_fleet * fixed_rate, 4)
+        maint = round(vmt_km  * maint_rate, 4)
+        fuel_liters = round(vmt_km * vc.fuel_l_per_100km / 100.0, 4)
+        fuel_cost = round(fuel_liters * fuel_price_for_type, 4)
+
+        per_vtype_cost[name] = {
+            "fleet_size":              n_fleet,
+            "fixed_cost":              fixed,
+            "distance_operating_cost": maint,
+            "fuel_liters":             fuel_liters,
+            "fuel_cost":               fuel_cost,
+            "total_operating_cost":    round(fixed + maint + fuel_cost, 4),
+        }
+        total_fixed += fixed
+        total_maint += maint
+        total_fuel_cost += fuel_cost
+
+    # ── Aggregate ──────────────────────────────────────────────────────
+    total_fixed      = round(total_fixed, 4)
+    total_maint      = round(total_maint, 4)
+    total_fuel_cost  = round(total_fuel_cost, 4)
+    av_total_op_cost = round(total_fixed + total_maint + total_fuel_cost, 4)
+
+    # ── Normalised rates ───────────────────────────────────────────────
+    total_commuters  = av.get("total_commuters", 0)
+    served_commuters = av.get("served_commuters", 0)
+    passenger_km     = av.get("passenger_km", 0.0)
+    adj_vmt_km       = av.get(
+        "adjusted_av_total_vmt_km",
+        av.get("total_vmt_km", 0.0),
+    )
+
+    def _safe_div(num: float, den: float) -> float:
+        return round(num / den, 6) if den else 0.0
+
+    return {
+        "av_fleet_fixed_cost":          total_fixed,
+        "av_distance_operating_cost":   total_maint,
+        "av_fuel_cost":                 total_fuel_cost,
+        "av_total_operating_cost":      av_total_op_cost,
+        "av_cost_per_commuter_total":   _safe_div(av_total_op_cost, total_commuters),
+        "av_cost_per_served_commuter":  _safe_div(av_total_op_cost, served_commuters),
+        "av_cost_per_passenger_km":     _safe_div(av_total_op_cost, passenger_km),
+        "av_cost_per_vehicle_km":       _safe_div(av_total_op_cost, adj_vmt_km),
+        "av_cost_by_vehicle_type":      per_vtype_cost,
     }
 
 
@@ -408,6 +571,19 @@ def compare(av: dict, baseline: dict, name: str,
         "fleet_storage_equiv_spaces",
         "net_parking_equiv_if_fleet_stored_at_station",
         "net_parking_reduction_pct_if_fleet_stored_at_station",
+    ):
+        if key in av:
+            out[key] = av[key]
+    for key in (
+        "av_fleet_fixed_cost",
+        "av_distance_operating_cost",
+        "av_fuel_cost",
+        "av_total_operating_cost",
+        "av_cost_per_commuter_total",
+        "av_cost_per_served_commuter",
+        "av_cost_per_passenger_km",
+        "av_cost_per_vehicle_km",
+        "av_cost_by_vehicle_type",
     ):
         if key in av:
             out[key] = av[key]

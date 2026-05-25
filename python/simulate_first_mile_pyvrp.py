@@ -61,6 +61,7 @@ from simulate_first_mile_utils import (
     VehicleConfig,
     TimeWindowConfig,
     ExperimentConfig,
+    CostModel,
     smooth_penalty,
     build_cost_matrix,
     generate_windows_sec,
@@ -68,6 +69,7 @@ from simulate_first_mile_utils import (
     assign_individual_windows,
     calculate_baseline,
     calculate_parking_metrics,
+    calculate_cost_metrics,
     compare,
     TripStop,
     iteratively_prune_late_commuters,
@@ -131,6 +133,27 @@ def load_config(path: str) -> ExperimentConfig:
     buf_sec = tw.get("buffer_before_deadline_minutes", 0.0) * 60.0
     sc = cfg["solver_config"]
     bp = cfg["baseline_parameters"]
+    # ── Cost model (optional — defaults to all-zero if absent) ────────
+    cm_raw = cfg.get("cost_model") or {}
+    fuel_price_raw = cm_raw.get("fuel_price_per_liter", 0.0)
+    if isinstance(fuel_price_raw, dict):
+        fuel_price_per_liter = {
+            k: float(v)
+            for k, v in fuel_price_raw.items()
+        }
+    else:
+        fuel_price_per_liter = float(fuel_price_raw or 0.0)
+    cost_model = CostModel(
+        fuel_price_per_liter=fuel_price_per_liter,
+        fixed_cost_per_vehicle={
+            k: float(v)
+            for k, v in (cm_raw.get("fixed_cost_per_vehicle") or {}).items()
+        },
+        maintenance_cost_per_km={
+            k: float(v)
+            for k, v in (cm_raw.get("maintenance_cost_per_km") or {}).items()
+        },
+    )
     return ExperimentConfig(
         experiment_name=cfg["experiment_name"],
         vehicle_types=vtypes,
@@ -149,6 +172,7 @@ def load_config(path: str) -> ExperimentConfig:
         private_car_fuel_l_per_100km=bp["private_car_fuel_l_per_100km"],
         private_car_co2_kg_per_liter=bp["private_car_co2_kg_per_liter"],
         private_car_speed_kmph=bp["private_car_speed_kmph"],
+        cost_model=cost_model,
     )
 
 
@@ -1119,6 +1143,7 @@ def extract_results(
         "per_vehicle_type":        per_type,
     }
     metrics.update(calculate_parking_metrics(metrics, cfg))
+    metrics.update(calculate_cost_metrics(metrics, cfg))
     return metrics
 
 
