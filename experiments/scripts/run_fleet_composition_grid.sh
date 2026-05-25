@@ -32,6 +32,7 @@
 #   OUTPUT_DIR           output root (default: experiments/results/fleet_composition_grid_224seats)
 #                        RESULTS_DIR is also accepted as a legacy alias
 #   CONFIGS_DIR          configs output dir (default: OUTPUT_DIR/configs)
+#   BASE_CONFIG          canonical config template (default: config/base_config.json)
 #
 # Usage (from hub_label/ root):
 #   bash experiments/scripts/run_fleet_composition_grid.sh
@@ -58,6 +59,10 @@ PYVRP_SCRIPT="$ROOT/python/simulate_first_mile_pyvrp.py"
 COMMUTERS_CSV="$ROOT/files/inputs/commuters.csv"
 STATIONS_CSV="$ROOT/files/inputs/stations.csv"
 MATRICES_DIR="$ROOT/files/matrices"
+BASE_CONFIG=${BASE_CONFIG:-config/base_config.json}
+if [[ "$BASE_CONFIG" != /* ]]; then
+    BASE_CONFIG="$ROOT/$BASE_CONFIG"
+fi
 
 EXPERIMENT="fleet_composition_grid_224seats"
 DEFAULT_RESULTS_DIR="$ROOT/experiments/results/$EXPERIMENT"
@@ -83,34 +88,28 @@ CONFIG_ONLY=${CONFIG_ONLY:-0}
 generate_configs() {
     rm -rf "$CONFIGS_DIR"
     mkdir -p "$CONFIGS_DIR"
-    python3 - "$CONFIGS_DIR" "$TIME_LIMIT_SECONDS" << 'PYEOF'
-import sys, json, csv
+    python3 - "$CONFIGS_DIR" "$TIME_LIMIT_SECONDS" "$BASE_CONFIG" << 'PYEOF'
+import sys, json, csv, copy
 from itertools import product
 
 CONFIGS_DIR = sys.argv[1]
 TIME_LIMIT = int(sys.argv[2])
+BASE_CONFIG = sys.argv[3]
 SHARES = [0,25,50,75,100]
-CAPS = {"Scooter":1, "Moped":2, "Car":4, "Minibus":8}
 SEATS_PER_25 = 56
 
-VEHICLE_PARAMS = {
-    "Scooter": {"max_speed_kmph": 25, "fuel_l_per_100km": 2.0,
-                "co2_kg_per_liter": 2.35,
-                "distance_band": {"lower_km": 0.0, "upper_km": 2.0},
-                "fixed_cost_km_equiv": 0.0},
-    "Moped":   {"max_speed_kmph": 45, "fuel_l_per_100km": 3.0,
-                "co2_kg_per_liter": 2.35,
-                "distance_band": {"lower_km": 1.5, "upper_km": 6.0},
-                "fixed_cost_km_equiv": 0.0},
-    "Car":     {"max_speed_kmph": 80, "fuel_l_per_100km": 11.1,
-                "co2_kg_per_liter": 2.35,
-                "distance_band": {"lower_km": 4.0, "upper_km": 12.0},
-                "fixed_cost_km_equiv": 0.0},
-    "Minibus": {"max_speed_kmph": 70, "fuel_l_per_100km": 14.0,
-                "co2_kg_per_liter": 2.68,
-                "distance_band": {"lower_km": 8.0, "upper_km": 20.0},
-                "fixed_cost_km_equiv": 0.0},
+with open(BASE_CONFIG, "r", encoding="utf-8") as f:
+    base_cfg = json.load(f)
+
+base_vehicle_by_name = {
+    v["name"]: v
+    for v in base_cfg["fleet"]["vehicle_types"]
 }
+vehicle_order = ["Scooter", "Moped", "Car", "Minibus"]
+missing = [name for name in vehicle_order if name not in base_vehicle_by_name]
+if missing:
+    raise ValueError(f"Base config missing vehicle definitions: {missing}")
+CAPS = {name: int(base_vehicle_by_name[name]["capacity"]) for name in vehicle_order}
 
 # Build compositions
 comps = []
@@ -167,44 +166,21 @@ print(f"  Total compositions: {len(comps)}\n")
 for c in comps:
     ns = c['scooter_count']; nm = c['moped_count']
     nc = c['car_count'];     nb = c['minibus_count']
-    cfg = {
-        'experiment_name': c['condition'],
-        'composition_metadata': {k: c[k] for k in c if k != 'condition'},
-        'fleet': {'vehicle_types': []},
-        'time_window': {
-            'mode': 'fixed_slots',
-            'interval_minutes': 20,
-            'start_time_minutes': 420,
-            'end_time_minutes': 570,
-            'buffer_before_deadline_minutes': 0,
-        },
-        'solver_config': {'time_limit_seconds': TIME_LIMIT},
-        'penalty_parameters': {
-            'alpha': 1.0, 'beta': 1.0, 'penalty_mode': 'none', 'preference_scale_m': 500
-        },
-        'baseline_parameters': {
-            'private_car_fuel_l_per_100km': 11.1,
-            'private_car_co2_kg_per_liter': 2.35,
-            'private_car_speed_kmph': 80.0
-        }
-    }
+    cfg = copy.deepcopy(base_cfg)
+    cfg['experiment_name'] = c['condition']
+    cfg['composition_metadata'] = {k: c[k] for k in c if k != 'condition'}
+    cfg.setdefault('solver_config', {})['time_limit_seconds'] = TIME_LIMIT
+    cfg['fleet']['vehicle_types'] = []
+
     for vt, n in [('Scooter', ns), ('Moped', nm), ('Car', nc), ('Minibus', nb)]:
         if n == 0:
             continue
-        p = VEHICLE_PARAMS[vt]
-        cfg['fleet']['vehicle_types'].append({
-            'name': vt,
-            'capacity': CAPS[vt],
-            'max_speed_kmph': p['max_speed_kmph'],
-            'fuel_l_per_100km': p['fuel_l_per_100km'],
-            'co2_kg_per_liter': p['co2_kg_per_liter'],
-            'fleet_size': n,
-            'distance_band': p['distance_band'],
-            'fixed_cost_km_equiv': p['fixed_cost_km_equiv'],
-        })
+        vehicle_cfg = copy.deepcopy(base_vehicle_by_name[vt])
+        vehicle_cfg['fleet_size'] = n
+        cfg['fleet']['vehicle_types'].append(vehicle_cfg)
 
     cfg_path = f"{CONFIGS_DIR}/{c['condition']}.json"
-    with open(cfg_path, 'w') as f:
+    with open(cfg_path, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=2)
 
 # Write metadata CSV
@@ -320,10 +296,11 @@ echo "  Grid     : 25% seat-share increments, 35 compositions"
 echo "  Seeds    : $N_SEEDS"
 echo "  Parallel : $PARALLEL_JOBS workers ($TOTAL_CORES cores, 2 reserved)"
 echo "  Output   : $RESULTS_DIR"
+echo "  Base cfg : $BASE_CONFIG"
 echo ""
 
 # Validate prereqs
-for f in "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV"; do
+for f in "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$BASE_CONFIG"; do
     [[ -f "$f" ]] || { echo "ERROR: Missing file: $f"; exit 1; }
 done
 [[ -d "$MATRICES_DIR" ]] || { echo "ERROR: Missing matrices dir: $MATRICES_DIR"; exit 1; }

@@ -1,0 +1,107 @@
+{
+  "experiment_name": "base_pyvrp_first_mile_av",
+  "description": "Canonical base configuration for PyVRP first-mile AV feeder experiments. Experiment runners should copy this config and modify only experiment-specific fields.",
+
+  "fleet": {
+    "vehicle_types": [
+      {
+        "name": "Scooter",
+        "capacity": 1,
+        "max_speed_kmph": 25.0,
+        "fuel_l_per_100km": 2.0,
+        "co2_kg_per_liter": 2.35,
+        "fleet_size": 56,
+        "distance_band": {
+          "lower_km": 0.0,
+          "upper_km": 2.0
+        },
+        "fixed_cost_km_equiv": 0.0
+      },
+      {
+        "name": "Moped",
+        "capacity": 2,
+        "max_speed_kmph": 45.0,
+        "fuel_l_per_100km": 3.0,
+        "co2_kg_per_liter": 2.35,
+        "fleet_size": 28,
+        "distance_band": {
+          "lower_km": 1.5,
+          "upper_km": 6.0
+        },
+        "fixed_cost_km_equiv": 0.0
+      },
+      {
+        "name": "Car",
+        "capacity": 4,
+        "max_speed_kmph": 80.0,
+        "fuel_l_per_100km": 11.1,
+        "co2_kg_per_liter": 2.35,
+        "fleet_size": 14,
+        "distance_band": {
+          "lower_km": 4.0,
+          "upper_km": 12.0
+        },
+        "fixed_cost_km_equiv": 0.0
+      },
+      {
+        "name": "Minibus",
+        "capacity": 8,
+        "max_speed_kmph": 70.0,
+        "fuel_l_per_100km": 14.0,
+        "co2_kg_per_liter": 2.68,
+        "fleet_size": 7,
+        "distance_band": {
+          "lower_km": 8.0,
+          "upper_km": 20.0
+        },
+        "fixed_cost_km_equiv": 0.0
+      }
+    ]
+  },
+
+  "time_window": {
+    "mode": "fixed_slots",
+    "interval_minutes": 20,
+    "start_time_minutes": 420,
+    "end_time_minutes": 570,
+    "buffer_before_deadline_minutes": 0.0
+  },
+
+  "solver_config": {
+    "time_limit_seconds": 180
+  },
+
+  "penalty_parameters": {
+    "alpha": 1.0,
+    "beta": 1.0,
+    "penalty_mode": "none",
+    "preference_scale_m": 500
+  },
+
+  "baseline_parameters": {
+    "private_car_fuel_l_per_100km": 11.1,
+    "private_car_co2_kg_per_liter": 2.35,
+    "private_car_speed_kmph": 80.0
+  },
+
+  "cost_model": {
+    "fuel_price_per_liter": {
+      "Scooter": 1.90,
+      "Moped": 1.90,
+      "Car": 1.90,
+      "Minibus": 2.00
+    },
+    "fixed_cost_per_vehicle": {
+      "Scooter": 8.0,
+      "Moped": 15.0,
+      "Car": 40.0,
+      "Minibus": 80.0
+    },
+    "maintenance_cost_per_km": {
+      "Scooter": 0.05,
+      "Moped": 0.08,
+      "Car": 0.18,
+      "Minibus": 0.25
+    }
+  }
+}
