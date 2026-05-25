@@ -393,6 +393,14 @@ def write_metadata(metadata_path: str,
         "tap_ons_extracted": tap_ons_extracted,
         "reachable_origins_generated": reachable_origins_generated,
         "commuters_written": commuters_written,
+        "origin_candidate_source": "road_network_nodes",
+        "origin_sampling_backend": "build_commuters_reachable",
+        "origin_sampling_method": (
+            "farthest_point_ordering_then_bidirectional_reachability"
+        ),
+        "residential_address_based": False,
+        "temporal_demand_source": "Myki tap-on times",
+        "temporal_spatial_pairing": "seeded_random_pairing",
         "origin_generation_method": (
             "reachable_random_pairing_with_haversine_feasibility_filter"
         ),
