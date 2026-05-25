@@ -802,18 +802,17 @@ def extract_results(
             trip_stops = []
             for sub_i, orig_i in zip(trip_visits, trip_orig_ids):
                 c = commuters[orig_i]
+                station_deadline_sec = int(c.drop_off_latest_min * 60)
                 if windows_sec is not None:
                     stop_wa = window_assignment[orig_i]
-                    station_deadline_sec = int(windows_sec[stop_wa])
                     pickup_earliest_sec = int(c.pickup_earliest_min * 60)
                     pickup_latest_sec = int(
-                        station_deadline_sec
+                        int(windows_sec[stop_wa])
                         - cfg.time_window.buffer_before_deadline_sec
                         - int(dur_mat[sub_i, 0])
                     )
                 else:
                     pickup_earliest_sec, pickup_latest_sec = window_assignment[orig_i]
-                    station_deadline_sec = int(c.drop_off_latest_min * 60)
 
                 trip_stops.append(TripStop(
                     commuter_id=c.id,

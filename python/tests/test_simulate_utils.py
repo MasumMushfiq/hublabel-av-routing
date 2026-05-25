@@ -95,12 +95,18 @@ def test_assign_latest_feasible_window_and_individual():
     assert ind[1] == (-1, -1)
 
 
-def make_trip_stop(commuter_id, matrix_idx, deadline, original_pickup=100, earliest=0):
+def make_trip_stop(
+        commuter_id,
+        matrix_idx,
+        deadline,
+        original_pickup=100,
+        earliest=0,
+        pickup_latest=10_000):
     return TripStop(
         commuter_id=commuter_id,
         matrix_idx=matrix_idx,
         pickup_earliest_sec=earliest,
-        pickup_latest_sec=10_000,
+        pickup_latest_sec=pickup_latest,
         station_deadline_sec=deadline,
         original_pickup_time_sec=original_pickup,
     )
@@ -117,6 +123,23 @@ def test_prune_no_late_commuters():
     assert result.removed_late_stops == []
     assert result.station_arrival_sec == 125
     assert result.iterations == 0
+
+
+def test_prune_uses_station_deadline_not_transformed_pickup_latest():
+    dur = np.array([[0, 10], [10, 0]])
+    stops = [
+        make_trip_stop(
+            1,
+            1,
+            deadline=120,
+            original_pickup=100,
+            pickup_latest=60,
+        ),
+    ]
+    result = iteratively_prune_late_commuters(stops, dur)
+    assert [s.commuter_id for s in result.kept_stops] == [1]
+    assert result.removed_late_stops == []
+    assert result.station_arrival_sec == 110
 
 
 def test_prune_one_late_commuter_keeps_other_after_recompute():
