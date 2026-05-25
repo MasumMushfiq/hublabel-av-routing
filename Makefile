@@ -45,7 +45,7 @@ PFX_TIME       := $(DATASET_DIR)/melton_time
 COMMUTERS_CSV  := $(INPUT_DIR)/commuters.csv
 STATIONS_CSV   := $(INPUT_DIR)/stations.csv
 SPEED_TABLE    := $(INPUT_DIR)/melton_graph_speed.txt
-CONFIG_FILE    := $(CONFIG_DIR)/baseline_mixed_fleet.json
+CONFIG_FILE    := $(CONFIG_DIR)/base_config.json
 
 # =========================
 # Results directories

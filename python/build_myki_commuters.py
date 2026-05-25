@@ -335,7 +335,7 @@ def write_csv(rows: list[dict], out_path: str) -> None:
     fields = ["id", "origin_node", "destination_node",
               "pickup_earliest", "drop_off_latest"]
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", newline="") as f:
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
         for i, row in enumerate(rows):
@@ -346,6 +346,69 @@ def write_csv(rows: list[dict], out_path: str) -> None:
                 "pickup_earliest":  row["pickup_earliest"],
                 "drop_off_latest":  row["drop_off_latest"],
             })
+
+
+def default_metadata_path(out_path: str) -> str:
+    out = Path(out_path)
+    return str(out.with_name(f"{out.stem}_metadata.json"))
+
+
+def write_metadata(metadata_path: str,
+                   output_csv: str,
+                   destination_node: int,
+                   myki_root: str,
+                   nodes_file: str,
+                   cpp_bin: str,
+                   labels: str,
+                   config: str,
+                   year: int | None,
+                   week: int | None,
+                   date: str | None,
+                   peak_start: str,
+                   peak_end: str,
+                   pickup_buffer_min: float,
+                   av_speed_kmh: float,
+                   seed: int,
+                   tap_ons_extracted: int,
+                   reachable_origins_generated: int,
+                   commuters_written: int) -> None:
+    metadata = {
+        "source": "Myki ScanOnTransaction",
+        "station_name": "Melton",
+        "destination_node": destination_node,
+        "myki_stop_ids": sorted(MELTON_STOP_IDS),
+        "myki_root": myki_root,
+        "nodes_file": nodes_file,
+        "cpp_bin": cpp_bin,
+        "labels": labels,
+        "config": config,
+        "year": year,
+        "week": week,
+        "date": date,
+        "peak_start": peak_start,
+        "peak_end": peak_end,
+        "pickup_buffer_min": pickup_buffer_min,
+        "av_speed_kmh": av_speed_kmh,
+        "seed": seed,
+        "tap_ons_extracted": tap_ons_extracted,
+        "reachable_origins_generated": reachable_origins_generated,
+        "commuters_written": commuters_written,
+        "origin_generation_method": (
+            "reachable_random_pairing_with_haversine_feasibility_filter"
+        ),
+        "feasibility_filter": {
+            "speed_kmh": av_speed_kmh,
+            "description": (
+                "Drops origin/time-window pairs when haversine travel time "
+                "at speed_kmh exceeds the pickup window width."
+            ),
+        },
+        "output_csv": output_csv,
+    }
+    Path(metadata_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+        f.write("\n")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────
@@ -375,6 +438,8 @@ def main():
     p.add_argument("--av-speed-kmh",   type=float, default=_DEFAULT_AV_SPEED_KMH,
                    help=f"AV speed for feasibility check in km/h (default: {_DEFAULT_AV_SPEED_KMH})")
     p.add_argument("--seed",           type=int, default=42)
+    p.add_argument("--metadata-out",   default=None,
+                   help="Metadata JSON path. Defaults to <out_stem>_metadata.json next to --out.")
     args = p.parse_args()
 
     peak_start_str, peak_end_str = load_peak_window(args.config)
@@ -421,7 +486,30 @@ def main():
 
     print(f"\n-- Step 4: Write --")
     write_csv(merged, args.out)
+    metadata_out = args.metadata_out or default_metadata_path(args.out)
+    write_metadata(
+        metadata_out,
+        output_csv=args.out,
+        destination_node=args.dest_node,
+        myki_root=args.myki_root,
+        nodes_file=args.nodes_file,
+        cpp_bin=args.cpp_bin,
+        labels=args.labels,
+        config=args.config,
+        year=args.year,
+        week=args.week,
+        date=args.date,
+        peak_start=peak_start_str,
+        peak_end=peak_end_str,
+        pickup_buffer_min=pickup_buffer,
+        av_speed_kmh=args.av_speed_kmh,
+        seed=args.seed,
+        tap_ons_extracted=len(myki_rows),
+        reachable_origins_generated=len(cpp_rows),
+        commuters_written=len(merged),
+    )
     print(f"  Done: {len(merged)} commuters -> {args.out}\n")
+    print(f"  Metadata: {metadata_out}\n")
 
     try:
         os.unlink(tmp_path)
