@@ -32,8 +32,8 @@ Current demand assumptions:
 - Total current demand: `1465` commuters.
 - Temporal demand is derived from Myki train tap-on records.
 - Myki provides station arrival/tap-on timing, not home locations.
-- Current commuter origins are sampled from reachable road-network nodes.
-- Residential-origin candidate preprocessing is implemented using inferred OSM residential/address candidates mapped to existing road-network nodes.
+- The main Melton commuter-origin method uses inferred OSM residential/address candidates mapped to existing road-network nodes.
+- Generic reachable road-network node sampling is retained only as a robustness/sensitivity comparison.
 
 Important limitation:
 
@@ -58,7 +58,7 @@ extract train tap-ons for selected station and date
     ↓
 retain one tap-on per card/day
     ↓
-optionally preprocess OSM residential/address candidates into road-network candidate nodes
+preprocess OSM residential/address candidates into road-network candidate nodes
     ↓
 call C++ reachable-origin sampler
     ↓
@@ -94,7 +94,7 @@ Current key inputs:
 --metadata-out
 ```
 
-`--nodes-file` is the origin candidate pool passed to `build_commuters_reachable`. For residential-origin runs this is typically `files/inputs/melton_residential_candidate_nodes.csv`. `--coord-nodes-file` is the full node-coordinate lookup used only for distance-aware pairing and the haversine feasibility filter; if omitted, it defaults to `--nodes-file` for backward compatibility.
+`--nodes-file` is the origin candidate pool passed to `build_commuters_reachable`. Main Melton experiments should use `files/inputs/melton_residential_candidate_nodes.csv`. `--coord-nodes-file` is the full node-coordinate lookup used only for distance-aware pairing and the haversine feasibility filter; if omitted, it defaults to `--nodes-file` for backward compatibility.
 
 Current metadata should record:
 
@@ -121,6 +121,12 @@ Current origin-generation modes:
 
 - `farthest`: spatially spread road-network candidate ordering.
 - `random`: random candidate ordering. This is preferred for residential candidate pools because it better preserves candidate-density effects.
+
+Generic reachable-node demand:
+
+- samples from the broader road-node set rather than residential/address candidates;
+- is useful for checking whether conclusions depend on origin-generation assumptions;
+- should be reported, if used, as a robustness/sensitivity comparison rather than the main spatial-demand method.
 
 ### 3.1 C++ Reachable-Origin Sampler
 
@@ -172,9 +178,11 @@ dataset/OSM_DATA/melton_osm.pbf
 files/inputs/melton_nodes_lat_lon.csv
 ```
 
-It:
+The main Melton spatial-demand pipeline is:
 
 ```text
+Myki temporal demand
+    +
 OSM/address/building residential candidates
     ↓
 map candidates to nearest road nodes
@@ -182,6 +190,12 @@ map candidates to nearest road nodes
 remove candidates within the walking threshold of Melton Station
     ↓
 write residential candidate points, node mappings, unique node pool, and metadata
+    ↓
+random sampling from residential candidate pool
+    ↓
+bidirectional reachability validation by build_commuters_reachable
+    ↓
+pair sampled origins with Myki tap-on deadlines
 ```
 
 The current default walking threshold is `800 m` direct haversine distance from Melton Station. It is not pedestrian-network walking distance.
@@ -204,6 +218,12 @@ The resulting candidate node file can be passed to `python/build_myki_commuters.
 ```
 
 `build_commuters_reachable` still performs bidirectional reachability validation after residential candidate preprocessing.
+
+Paper framing:
+
+- Main results should use residential-origin demand.
+- Generic reachable-node demand may be reported compactly as a robustness check if the qualitative fleet tradeoffs are similar.
+- If generic-node and residential-origin results differ, residential-origin results should be treated as more defensible for the main analysis because they are spatially grounded in residential/address candidates.
 
 ---
 
@@ -1092,9 +1112,12 @@ If the requested change conflicts with the spec, stop and report the conflict be
 Immediate next work:
 
 1. Create and validate this project specification. Completed
-2. Validate residential address/building candidate demand generation in experiments.
-3. Update AV fleet cost assumptions with cited real-world values.
-4. Update runners and plotting scripts one by one for the new energy metrics.
-5. Select additional station case studies.
-6. Rerun key experiments with the corrected evaluation and all-electric model.
-7. Share updated outputs with supervisors before the next meeting.
+2. Treat residential-origin demand as the main Melton demand input.
+3. Redo solver/configuration calibration experiments under residential-origin demand.
+4. Refine AV fleet cost assumptions using real cited values before final main fleet-composition, representative, capacity, and cost-related interpretation.
+5. Rerun the main residential full-grid and representative experiments with the refined cost assumptions.
+6. Keep generic reachable-node results as a robustness/sensitivity comparison.
+7. Select additional station case studies.
+8. Share updated outputs with supervisors before the next meeting.
+
+Solver/configuration calibration experiments may be run before final cost refinement. Main fleet-composition results, representative-fleet comparison, capacity sensitivity, and final cost-related interpretation should use the refined cost assumptions.
