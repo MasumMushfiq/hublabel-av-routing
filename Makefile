@@ -184,6 +184,17 @@ NODES_CSV      := $(INPUT_DIR)/melton_nodes_lat_lon.csv
 DEST_NODE      := 19858
 SEED           := 42
 
+RESIDENTIAL_OSM_PBF              := dataset/OSM_DATA/melton_osm.pbf
+RESIDENTIAL_CANDIDATE_NODES      := files/inputs/melton_residential_candidate_nodes.csv
+RESIDENTIAL_CANDIDATE_POINTS     := files/inputs/melton_residential_candidate_points.csv
+RESIDENTIAL_CANDIDATE_MAPPING    := files/inputs/melton_residential_candidate_node_mapping.csv
+RESIDENTIAL_CANDIDATE_METADATA   := files/inputs/melton_residential_candidates_metadata.json
+RESIDENTIAL_COMMUTERS_CSV        := files/inputs/commuters_residential.csv
+RESIDENTIAL_COMMUTERS_METADATA   := files/inputs/commuters_residential_metadata.json
+RESIDENTIAL_MATRICES_DIR         := dataset/MELTON/melton_residential_matrix
+RESIDENTIAL_SMOKE_DIR            := experiments/test_results/residential_smoke_balanced
+RESIDENTIAL_WALKING_THRESHOLD_M  := 800
+
 # ── synthetic: commuters_run ──────────────────────────────────────────────────
 # Generates commuters.csv with synthetic time windows via the C++ binary alone.
 # Use this for controlled experiments where you want a Gaussian/fixed time window.
@@ -258,7 +269,7 @@ _YEAR_FLAG = $(if $(MYKI_YEAR),--year $(MYKI_YEAR),)
 _WEEK_FLAG = $(if $(MYKI_WEEK),--week $(MYKI_WEEK),)
 _DATE_FLAG = $(if $(MYKI_DATE),--date $(MYKI_DATE),)
 
-.PHONY: myki_commuters
+.PHONY: myki_commuters residential_candidates myki_commuters_residential dump_matrices_residential pyvrp_run_residential_smoke residential_smoke
 
 myki_commuters: $(COMMUTERS_BIN)
 	@test -d "$(MYKI_ROOT)" || \
@@ -284,6 +295,88 @@ myki_commuters: $(COMMUTERS_BIN)
 	@echo ""
 	@echo "✓ Commuters written to: $(COMMUTERS_CSV)"
 	@ls -lh "$(COMMUTERS_CSV)" 2>/dev/null || true
+
+residential_candidates:
+	@test -f "$(RESIDENTIAL_OSM_PBF)" || \
+		(echo "Missing residential OSM PBF: $(RESIDENTIAL_OSM_PBF)"; exit 1)
+	@test -f "$(NODES_CSV)" || \
+		(echo "Missing road nodes CSV: $(NODES_CSV)"; exit 1)
+	@mkdir -p "$(INPUT_DIR)"
+	@echo ""
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║        BUILDING RESIDENTIAL ORIGIN CANDIDATE NODES            ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	python python/build_residential_origin_candidates.py \
+		--osm-pbf "$(RESIDENTIAL_OSM_PBF)" \
+		--road-nodes "$(NODES_CSV)" \
+		--station-node $(DEST_NODE) \
+		--walking-threshold-m $(RESIDENTIAL_WALKING_THRESHOLD_M) \
+		--out-nodes "$(RESIDENTIAL_CANDIDATE_NODES)" \
+		--out-points "$(RESIDENTIAL_CANDIDATE_POINTS)" \
+		--out-mapping "$(RESIDENTIAL_CANDIDATE_MAPPING)" \
+		--metadata-out "$(RESIDENTIAL_CANDIDATE_METADATA)"
+	@echo ""
+	@echo "✓ Residential candidate nodes written to: $(RESIDENTIAL_CANDIDATE_NODES)"
+	@ls -lh "$(RESIDENTIAL_CANDIDATE_NODES)" "$(RESIDENTIAL_CANDIDATE_METADATA)" 2>/dev/null || true
+
+myki_commuters_residential: $(COMMUTERS_BIN)
+	@test -d "$(MYKI_ROOT)" || \
+		(echo "Missing MYKI data: $(MYKI_ROOT)"; exit 1)
+	@test -f "$(RESIDENTIAL_CANDIDATE_NODES)" || \
+		(echo "Missing residential candidate nodes: $(RESIDENTIAL_CANDIDATE_NODES)"; \
+		 echo "Run: make residential_candidates"; exit 1)
+	@test -f "$(RESIDENTIAL_CANDIDATE_METADATA)" || \
+		(echo "Missing residential candidate metadata: $(RESIDENTIAL_CANDIDATE_METADATA)"; \
+		 echo "Run: make residential_candidates"; exit 1)
+	@test -f "$(NODES_CSV)" || \
+		(echo "Missing coordinate nodes CSV: $(NODES_CSV)"; exit 1)
+	@mkdir -p "$(INPUT_DIR)"
+	@echo ""
+	@echo "╔════════════════════════════════════════════════════════════════╗"
+	@echo "║    GENERATING COMMUTERS  [Myki + residential origin nodes]     ║"
+	@echo "╚════════════════════════════════════════════════════════════════╝"
+	python $(MYKI_SCRIPT) \
+		--myki-root     $(MYKI_ROOT) \
+		--nodes-file    $(RESIDENTIAL_CANDIDATE_NODES) \
+		--coord-nodes-file $(NODES_CSV) \
+		--dest-node     $(DEST_NODE) \
+		--cpp-bin       $(COMMUTERS_BIN) \
+		--labels        $(PFX_DIST) \
+		--out           $(RESIDENTIAL_COMMUTERS_CSV) \
+		--config        $(CONFIG_FILE) \
+		--pickup-buffer $(PICKUP_BUF) \
+		--seed          $(SEED) \
+		--origin-sampling random \
+		--metadata-out  $(RESIDENTIAL_COMMUTERS_METADATA) \
+		--origin-candidate-source osm_residential_address_candidate_nodes \
+		--residential-candidate-metadata $(RESIDENTIAL_CANDIDATE_METADATA) \
+		$(_YEAR_FLAG) $(_WEEK_FLAG) $(_DATE_FLAG)
+	@echo ""
+	@echo "✓ Residential commuters written to: $(RESIDENTIAL_COMMUTERS_CSV)"
+	@ls -lh "$(RESIDENTIAL_COMMUTERS_CSV)" "$(RESIDENTIAL_COMMUTERS_METADATA)" 2>/dev/null || true
+
+dump_matrices_residential:
+	$(MAKE) dump_matrices \
+		COMMUTERS_CSV="$(RESIDENTIAL_COMMUTERS_CSV)" \
+		MATRICES_DIR="$(RESIDENTIAL_MATRICES_DIR)"
+
+pyvrp_run_residential_smoke:
+	$(MAKE) pyvrp_run \
+		COMMUTERS_CSV="$(RESIDENTIAL_COMMUTERS_CSV)" \
+		MATRICES_DIR="$(RESIDENTIAL_MATRICES_DIR)" \
+		CONFIG_FILE="$(CONFIG_FILE)" \
+		PYVRP_DIR="$(RESIDENTIAL_SMOKE_DIR)" \
+		PYVRP_ASSIGN="$(RESIDENTIAL_SMOKE_DIR)/assignments.csv" \
+		PYVRP_ROUTES="$(RESIDENTIAL_SMOKE_DIR)/av_routes.csv" \
+		PYVRP_BASELINE="$(RESIDENTIAL_SMOKE_DIR)/baseline.json" \
+		PYVRP_METRICS="$(RESIDENTIAL_SMOKE_DIR)/metrics.json" \
+		PYVRP_COMPARE="$(RESIDENTIAL_SMOKE_DIR)/comparison.json"
+
+residential_smoke:
+	$(MAKE) residential_candidates
+	$(MAKE) myki_commuters_residential
+	$(MAKE) dump_matrices_residential
+	$(MAKE) pyvrp_run_residential_smoke
 
 # =========================
 # Unified clean targets
@@ -345,6 +438,13 @@ help:
 	@echo "  myki_commuters   Generate commuters.csv [real Myki tap-on times]"
 	@echo "                   Override: MYKI_YEAR, MYKI_WEEK, MYKI_DATE"
 	@echo ""
+	@echo "  residential_candidates"
+	@echo "                   Build OSM residential/address candidate node files"
+	@echo "  myki_commuters_residential"
+	@echo "                   Generate commuters_residential.csv [Myki + residential nodes]"
+	@echo "  dump_matrices_residential"
+	@echo "                   Build matrices for residential commuters"
+	@echo ""
 	@echo "  labels           Build distance + time hub labels"
 	@echo "  dump_matrices    Build distance/duration matrices for PyVRP"
 	@echo ""
@@ -353,6 +453,10 @@ help:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "  solver_run       Run OR-Tools simulation → results/ortools/"
 	@echo "  pyvrp_run        Run PyVRP simulation    → results/pyvrp/"
+	@echo "  pyvrp_run_residential_smoke"
+	@echo "                   Run residential PyVRP smoke test"
+	@echo "  residential_smoke"
+	@echo "                   Run residential candidates → commuters → matrices → smoke"
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "  CLEAN / INSPECT"
