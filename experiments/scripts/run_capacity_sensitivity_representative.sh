@@ -23,6 +23,7 @@ set -euo pipefail
 #   bash experiments/scripts/run_capacity_sensitivity_representative.sh [--dry-run]
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$ROOT_DIR"
 cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -51,13 +52,13 @@ mkdir -p "$RESULTS_ROOT"
 mkdir -p "$CONFIG_ROOT"
 
 # ---------------------------------------------------------------------
-# Base data paths.
-# Adjust these only if your current runner uses different names.
+# Base data paths. Override with COMMUTERS_CSV, STATIONS_CSV, or MATRICES_DIR.
+# Default matrices: $ROOT/dataset/MELTON/melton_generic_matrix.
 # ---------------------------------------------------------------------
 
-COMMUTERS_CSV="${COMMUTERS_CSV:-files/inputs/commuters.csv}"
-STATIONS_CSV="${STATIONS_CSV:-files/inputs/stations.csv}"
-MATRICES_DIR="${MATRICES_DIR:-files/matrices}"
+COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters.csv}"
+STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
+MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
 
 # ---------------------------------------------------------------------
 # Vehicle parameters.

@@ -36,9 +36,15 @@ set -euo pipefail
 #   DRY_RUN=1 bash experiments/scripts/run_pilot_fleet_demand_sensitivity.sh
 #   NUM_SEEDS=3  RESUME=1 JOBS=10 bash experiments/scripts/run_pilot_fleet_demand_sensitivity.sh
 #   NUM_SEEDS=10 RESUME=1 JOBS=10 bash experiments/scripts/run_pilot_fleet_demand_sensitivity.sh
+#
+# Input overrides:
+#   COMMUTERS_CSV default: $ROOT/files/inputs/commuters.csv
+#   STATIONS_CSV  default: $ROOT/files/inputs/stations.csv
+#   MATRICES_DIR  default: $ROOT/dataset/MELTON/melton_generic_matrix
 # =============================================================================
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$ROOT_DIR"
 cd "$ROOT_DIR"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -58,9 +64,9 @@ DEMAND_SAMPLE_SEED="${DEMAND_SAMPLE_SEED:-42}"
 
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-FULL_COMMUTERS_CSV="${COMMUTERS_CSV:-files/inputs/commuters.csv}"
-STATIONS_CSV="${STATIONS_CSV:-files/inputs/stations.csv}"
-MATRICES_DIR="${MATRICES_DIR:-files/matrices}"
+FULL_COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters.csv}"
+STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
+MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
 
 JOBS_FILE="${RESULTS_ROOT}/jobs.txt"
 JOBLOG="${RESULTS_ROOT}/parallel_joblog.tsv"

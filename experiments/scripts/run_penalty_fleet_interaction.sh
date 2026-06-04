@@ -6,9 +6,9 @@ PARALLEL_JOBS=${PARALLEL_JOBS:-$(( TOTAL_CORES > 2 ? TOTAL_CORES - 2 : 1 ))}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PYVRP_SCRIPT="$ROOT/python/simulate_first_mile_pyvrp.py"
-COMMUTERS_CSV="$ROOT/files/inputs/commuters.csv"
-STATIONS_CSV="$ROOT/files/inputs/stations.csv"
-MATRICES_DIR="$ROOT/files/matrices"
+COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters.csv}"
+STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
+MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
 DRY_RUN=${DRY_RUN:-0}
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
@@ -22,6 +22,11 @@ DRY_RUN=${DRY_RUN:-0}
 #   Fleet scales  : x0.90 (200 seats), x1.00 (224 seats), x1.10 (247 seats), x1.25 (280 seats)
 #   Seeds         : configurable (default 15)
 #   Total         : 2 penalty modes × 4 fleet scales × N_SEEDS
+#
+# Input overrides:
+#   COMMUTERS_CSV default: $ROOT/files/inputs/commuters.csv
+#   STATIONS_CSV  default: $ROOT/files/inputs/stations.csv
+#   MATRICES_DIR  default: $ROOT/dataset/MELTON/melton_generic_matrix
 # =============================================================================
 
 EXPERIMENT="penalty_fleet_interaction_224seats"
