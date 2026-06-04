@@ -3,7 +3,7 @@ simulate_first_mile_utils.py
 Utility functions extracted from simulate_first_mile_pyvrp.py for unit testing.
 """
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Union
+from typing import List, Dict, Tuple, Optional
 import numpy as np
 
 PARKING_EQUIV_BY_VEHICLE_TYPE = {
@@ -27,8 +27,7 @@ class VehicleConfig:
     name: str
     capacity: int
     max_speed_kmph: float
-    fuel_l_per_100km: float
-    co2_kg_per_liter: float
+    energy_kwh_per_km: float
     fleet_size: int
     lower_km: float
     upper_km: float
@@ -52,10 +51,6 @@ class CostModel:
 
     Fields
     ------
-    fuel_price_per_liter : float | dict[str, float]
-        Fuel price in AUD/litre.  Either a single value applied uniformly to
-        all vehicle types, or per-vehicle-type values keyed by type name.
-        Default: 0.0 (cost disabled / placeholder).
     fixed_cost_per_vehicle : dict[str, float]
         AUD fixed cost per vehicle per service period (e.g. per day), keyed
         by vehicle type name.  Represents lease, depreciation, insurance, or
@@ -67,18 +62,8 @@ class CostModel:
         adjusted (post-pruning) AV VMT per type.  Missing names fall back
         to 0.0.
     """
-    fuel_price_per_liter: Union[float, Dict[str, float]] = 0.0
     fixed_cost_per_vehicle: Dict[str, float] = field(default_factory=dict)
     maintenance_cost_per_km: Dict[str, float] = field(default_factory=dict)
-
-    def __post_init__(self):
-        if isinstance(self.fuel_price_per_liter, dict):
-            self.fuel_price_per_liter = {
-                str(k): float(v)
-                for k, v in self.fuel_price_per_liter.items()
-            }
-        else:
-            self.fuel_price_per_liter = float(self.fuel_price_per_liter or 0.0)
 
 
 @dataclass
@@ -89,8 +74,9 @@ class ExperimentConfig:
     time_limit_seconds: int
     alpha: float
     beta: float
-    private_car_fuel_l_per_100km: float
-    private_car_co2_kg_per_liter: float
+    private_car_energy_kwh_per_km: float
+    electricity_cost_per_kwh: float
+    grid_co2_kg_per_kwh: float
     private_car_speed_kmph: float
     penalty_mode: str = "multiplicative"
     preference_scale_m: int = 500
@@ -255,7 +241,7 @@ def calculate_parking_metrics(av: dict, cfg: ExperimentConfig) -> dict:
 COST_METRIC_FIELDS = {
     "av_fleet_fixed_cost",
     "av_distance_operating_cost",
-    "av_fuel_cost",
+    "av_energy_cost",
     "av_total_operating_cost",
     "av_cost_per_commuter_total",
     "av_cost_per_served_commuter",
@@ -284,13 +270,12 @@ def calculate_cost_metrics(av: dict, cfg: "ExperimentConfig") -> dict:
         Σ_k  adjusted_vmt_km(k) × maintenance_cost_per_km(k)
         Uses per-vehicle-type adjusted VMT from per_vehicle_type in av dict.
 
-    Fuel cost:
-        Σ_k adjusted_vmt_km(k) × fuel_l_per_100km(k) / 100 × fuel_price(k)
-        Uses per-vehicle-type adjusted VMT from per_vehicle_type in av dict.
+    Energy cost:
+        adjusted_av_total_energy_kwh × electricity_cost_per_kwh
 
-    All monetary values are in AUD.  When cost_model is None or all rates
-    are zero, every cost field is 0.0 — the pipeline stays valid and the
-    fields can be filled in later without rerunning the solver.
+    All monetary values are in AUD.  Energy cost is always computed from the
+    electricity rate in the experiment config.  When cost_model is None or
+    fixed/maintenance rates are absent, those non-energy components are 0.0.
 
     Normalisation denominators
     --------------------------
@@ -303,18 +288,12 @@ def calculate_cost_metrics(av: dict, cfg: "ExperimentConfig") -> dict:
 
     fixed_cost_per_vehicle  = cm.fixed_cost_per_vehicle  if cm else {}
     maintenance_cost_per_km = cm.maintenance_cost_per_km if cm else {}
-    fuel_price              = cm.fuel_price_per_liter     if cm else 0.0
-
-    def _fuel_price_for(name: str) -> float:
-        if isinstance(fuel_price, dict):
-            return float(fuel_price.get(name, 0.0))
-        return float(fuel_price)
 
     # ── Per-vehicle-type breakdown ─────────────────────────────────────
     per_vtype_cost: Dict[str, dict] = {}
     total_fixed = 0.0
     total_maint = 0.0
-    total_fuel_cost = 0.0
+    total_energy_cost = 0.0
 
     per_vehicle_type: Dict[str, dict] = av.get("per_vehicle_type", {})
 
@@ -325,30 +304,29 @@ def calculate_cost_metrics(av: dict, cfg: "ExperimentConfig") -> dict:
 
         fixed_rate = fixed_cost_per_vehicle.get(name, 0.0)
         maint_rate = maintenance_cost_per_km.get(name, 0.0)
-        fuel_price_for_type = _fuel_price_for(name)
 
         fixed = round(n_fleet * fixed_rate, 4)
         maint = round(vmt_km  * maint_rate, 4)
-        fuel_liters = round(vmt_km * vc.fuel_l_per_100km / 100.0, 4)
-        fuel_cost = round(fuel_liters * fuel_price_for_type, 4)
+        energy_kwh = round(vmt_km * vc.energy_kwh_per_km, 4)
+        energy_cost = round(energy_kwh * cfg.electricity_cost_per_kwh, 4)
 
         per_vtype_cost[name] = {
             "fleet_size":              n_fleet,
             "fixed_cost":              fixed,
             "distance_operating_cost": maint,
-            "fuel_liters":             fuel_liters,
-            "fuel_cost":               fuel_cost,
-            "total_operating_cost":    round(fixed + maint + fuel_cost, 4),
+            "energy_kwh":              energy_kwh,
+            "energy_cost":             energy_cost,
+            "total_operating_cost":    round(fixed + maint + energy_cost, 4),
         }
         total_fixed += fixed
         total_maint += maint
-        total_fuel_cost += fuel_cost
+        total_energy_cost += energy_cost
 
     # ── Aggregate ──────────────────────────────────────────────────────
-    total_fixed      = round(total_fixed, 4)
-    total_maint      = round(total_maint, 4)
-    total_fuel_cost  = round(total_fuel_cost, 4)
-    av_total_op_cost = round(total_fixed + total_maint + total_fuel_cost, 4)
+    total_fixed       = round(total_fixed, 4)
+    total_maint       = round(total_maint, 4)
+    total_energy_cost = round(total_energy_cost, 4)
+    av_total_op_cost  = round(total_fixed + total_maint + total_energy_cost, 4)
 
     # ── Normalised rates ───────────────────────────────────────────────
     total_commuters  = av.get("total_commuters", 0)
@@ -365,7 +343,7 @@ def calculate_cost_metrics(av: dict, cfg: "ExperimentConfig") -> dict:
     return {
         "av_fleet_fixed_cost":          total_fixed,
         "av_distance_operating_cost":   total_maint,
-        "av_fuel_cost":                 total_fuel_cost,
+        "av_energy_cost":               total_energy_cost,
         "av_total_operating_cost":      av_total_op_cost,
         "av_cost_per_commuter_total":   _safe_div(av_total_op_cost, total_commuters),
         "av_cost_per_served_commuter":  _safe_div(av_total_op_cost, served_commuters),
@@ -477,14 +455,16 @@ def calculate_baseline(
     for sub_i, orig_i in enumerate(feasible_idx):
         total_mm += int(raw_dist_sub[sub_i + 1, 0])
     total_km = total_mm / 1_000_000.0
-    fuel     = total_km * cfg.private_car_fuel_l_per_100km / 100.0
-    co2      = fuel * cfg.private_car_co2_kg_per_liter
+    energy   = total_km * cfg.private_car_energy_kwh_per_km
+    co2      = energy * cfg.grid_co2_kg_per_kwh
+    energy_cost = energy * cfg.electricity_cost_per_kwh
     return {
         "total_commuters":    original_count,
         "feasible_commuters": len(feasible_idx),
         "total_vmt_km":       round(total_km, 4),
-        "total_fuel_liters":  round(fuel, 4),
+        "total_energy_kwh":   round(energy, 4),
         "total_co2_kg":       round(co2, 4),
+        "baseline_energy_cost": round(energy_cost, 4),
         "passenger_km":       round(total_km, 4),
         "avg_trip_km":        round(total_km / len(feasible_idx), 4)
                               if feasible_idx else 0.0,
@@ -497,19 +477,19 @@ def compare(av: dict, baseline: dict, name: str,
     def pct(av_v, base_v):
         return round((av_v - base_v) / base_v * 100.0, 2) if base_v else 0.0
     raw_av_vmt = av.get("raw_av_total_vmt_km", av["total_vmt_km"])
-    raw_av_fuel = av.get("raw_av_total_fuel_liters", av["total_fuel_liters"])
+    raw_av_energy = av.get("raw_av_total_energy_kwh", av["total_energy_kwh"])
     raw_av_co2 = av.get("raw_av_total_co2_kg", av["total_co2_kg"])
     adjusted_av_vmt = av.get("adjusted_av_total_vmt_km", av["total_vmt_km"])
-    adjusted_av_fuel = av.get("adjusted_av_total_fuel_liters", av["total_fuel_liters"])
+    adjusted_av_energy = av.get("adjusted_av_total_energy_kwh", av["total_energy_kwh"])
     adjusted_av_co2 = av.get("adjusted_av_total_co2_kg", av["total_co2_kg"])
     system_vmt = av.get("system_total_vmt_km", av["total_vmt_km"])
-    system_fuel = av.get("system_total_fuel_liters", av["total_fuel_liters"])
+    system_energy = av.get("system_total_energy_kwh", av["total_energy_kwh"])
     system_co2 = av.get("system_total_co2_kg", av["total_co2_kg"])
     vmt_change_pct = pct(av["total_vmt_km"], baseline["total_vmt_km"])
-    fuel_change_pct = pct(av["total_fuel_liters"], baseline["total_fuel_liters"])
+    energy_change_pct = pct(av["total_energy_kwh"], baseline["total_energy_kwh"])
     co2_change_pct = pct(av["total_co2_kg"], baseline["total_co2_kg"])
     system_vmt_change_pct = pct(system_vmt, baseline["total_vmt_km"])
-    system_fuel_change_pct = pct(system_fuel, baseline["total_fuel_liters"])
+    system_energy_change_pct = pct(system_energy, baseline["total_energy_kwh"])
     system_co2_change_pct = pct(system_co2, baseline["total_co2_kg"])
     out = {
         "experiment_name":           name,
@@ -526,28 +506,30 @@ def compare(av: dict, baseline: dict, name: str,
             "raw_solver_effective_on_time_service_rate", 0.0
         ),
         "vmt_change_pct":            vmt_change_pct,
-        "fuel_change_pct":           fuel_change_pct,
+        "energy_change_pct":         energy_change_pct,
         "co2_change_pct":            co2_change_pct,
         "av_total_vmt_km":           av["total_vmt_km"],
         "baseline_total_vmt_km":     baseline["total_vmt_km"],
+        "av_total_energy_kwh":       av["total_energy_kwh"],
+        "baseline_total_energy_kwh": baseline["total_energy_kwh"],
         "av_total_co2_kg":           av["total_co2_kg"],
         "baseline_total_co2_kg":     baseline["total_co2_kg"],
         "raw_av_total_vmt_km":       raw_av_vmt,
-        "raw_av_total_fuel_liters":  raw_av_fuel,
+        "raw_av_total_energy_kwh":   raw_av_energy,
         "raw_av_total_co2_kg":       raw_av_co2,
         "adjusted_av_total_vmt_km":      adjusted_av_vmt,
-        "adjusted_av_total_fuel_liters": adjusted_av_fuel,
+        "adjusted_av_total_energy_kwh":  adjusted_av_energy,
         "adjusted_av_total_co2_kg":      adjusted_av_co2,
         "fallback_private_car_vmt_km": av.get("fallback_private_car_vmt_km", 0.0),
-        "fallback_private_car_fuel_liters": av.get("fallback_private_car_fuel_liters", 0.0),
+        "fallback_private_car_energy_kwh": av.get("fallback_private_car_energy_kwh", 0.0),
         "fallback_private_car_co2_kg": av.get("fallback_private_car_co2_kg", 0.0),
         "fallback_private_car_avg_trip_km": av.get("fallback_private_car_avg_trip_km", 0.0),
         "fallback_private_car_share_pct": av.get("fallback_private_car_share_pct", 0.0),
         "system_total_vmt_km":       system_vmt,
-        "system_total_fuel_liters":  system_fuel,
+        "system_total_energy_kwh":   system_energy,
         "system_total_co2_kg":       system_co2,
         "system_vmt_change_pct":     system_vmt_change_pct,
-        "system_fuel_change_pct":    system_fuel_change_pct,
+        "system_energy_change_pct":  system_energy_change_pct,
         "system_co2_change_pct":     system_co2_change_pct,
         "avg_passengers_per_trip":   av["avg_passengers_per_trip"],
         "vehicles_used":             av["vehicles_used"],
@@ -577,7 +559,7 @@ def compare(av: dict, baseline: dict, name: str,
     for key in (
         "av_fleet_fixed_cost",
         "av_distance_operating_cost",
-        "av_fuel_cost",
+        "av_energy_cost",
         "av_total_operating_cost",
         "av_cost_per_commuter_total",
         "av_cost_per_served_commuter",

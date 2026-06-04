@@ -122,8 +122,7 @@ def load_config(path: str) -> ExperimentConfig:
             name=v["name"],
             capacity=v["capacity"],
             max_speed_kmph=v["max_speed_kmph"],
-            fuel_l_per_100km=v["fuel_l_per_100km"],
-            co2_kg_per_liter=v["co2_kg_per_liter"],
+            energy_kwh_per_km=v["energy_kwh_per_km"],
             fleet_size=v["fleet_size"],
             lower_km=v["distance_band"]["lower_km"],
             upper_km=v["distance_band"]["upper_km"],
@@ -133,18 +132,10 @@ def load_config(path: str) -> ExperimentConfig:
     buf_sec = tw.get("buffer_before_deadline_minutes", 0.0) * 60.0
     sc = cfg["solver_config"]
     bp = cfg["baseline_parameters"]
+    em = cfg["energy_model"]
     # ── Cost model (optional — defaults to all-zero if absent) ────────
     cm_raw = cfg.get("cost_model") or {}
-    fuel_price_raw = cm_raw.get("fuel_price_per_liter", 0.0)
-    if isinstance(fuel_price_raw, dict):
-        fuel_price_per_liter = {
-            k: float(v)
-            for k, v in fuel_price_raw.items()
-        }
-    else:
-        fuel_price_per_liter = float(fuel_price_raw or 0.0)
     cost_model = CostModel(
-        fuel_price_per_liter=fuel_price_per_liter,
         fixed_cost_per_vehicle={
             k: float(v)
             for k, v in (cm_raw.get("fixed_cost_per_vehicle") or {}).items()
@@ -169,8 +160,9 @@ def load_config(path: str) -> ExperimentConfig:
         beta=cfg["penalty_parameters"]["beta"],
         penalty_mode=cfg["penalty_parameters"].get("penalty_mode", "multiplicative"),
         preference_scale_m=int(cfg["penalty_parameters"].get("preference_scale_m", 500)),
-        private_car_fuel_l_per_100km=bp["private_car_fuel_l_per_100km"],
-        private_car_co2_kg_per_liter=bp["private_car_co2_kg_per_liter"],
+        private_car_energy_kwh_per_km=bp["private_car_energy_kwh_per_km"],
+        electricity_cost_per_kwh=em["electricity_cost_per_kwh"],
+        grid_co2_kg_per_kwh=em["grid_co2_kg_per_kwh"],
         private_car_speed_kmph=bp["private_car_speed_kmph"],
         cost_model=cost_model,
     )
@@ -626,7 +618,7 @@ def extract_results(
 
     # ── Accumulators ──────────────────────────────────────────────────────
     raw_total_vmt_mm        = 0
-    raw_total_fuel_L        = 0.0
+    raw_total_energy_kwh    = 0.0
     raw_total_co2_kg        = 0.0
     raw_vehicle_trips       = 0
     raw_solver_late_deliveries = 0
@@ -635,7 +627,7 @@ def extract_results(
     total_penalised_m   = 0
     total_empty_mm      = 0
     total_loaded_mm     = 0
-    total_fuel_L        = 0.0
+    total_energy_kwh    = 0.0
     total_co2_kg        = 0.0
     total_pax_km        = 0.0
     vehicle_trips       = 0
@@ -784,9 +776,9 @@ def extract_results(
 
             raw_total_vmt_mm  += raw_trip_mm
             raw_trip_km = raw_trip_mm / 1_000_000.0
-            raw_fuel = raw_trip_km * vc.fuel_l_per_100km / 100.0
-            raw_total_fuel_L += raw_fuel
-            raw_total_co2_kg += raw_fuel * vc.co2_kg_per_liter
+            raw_energy = raw_trip_km * vc.energy_kwh_per_km
+            raw_total_energy_kwh += raw_energy
+            raw_total_co2_kg += raw_energy * cfg.grid_co2_kg_per_kwh
             total_penalised_m += trip_penalised_m
 
             # ── Window time string ────────────────────────────────────
@@ -864,9 +856,9 @@ def extract_results(
 
                 trip_km = trip_mm / 1_000_000.0
                 empty_km = trip_empty_mm / 1_000_000.0
-                fuel = trip_km * vc.fuel_l_per_100km / 100.0
-                total_fuel_L += fuel
-                total_co2_kg += fuel * vc.co2_kg_per_liter
+                energy = trip_km * vc.energy_kwh_per_km
+                total_energy_kwh += energy
+                total_co2_kg += energy * cfg.grid_co2_kg_per_kwh
 
                 n_trip_pax = len(kept_visits)
                 if n_trip_pax <= 1:
@@ -1037,11 +1029,14 @@ def extract_results(
     raw_total_vmt_km = raw_total_vmt_mm / 1_000_000.0
     fallback_private_cars = unserved_count + late_deliveries
     fallback_private_car_vmt_km = fallback_private_car_vmt_mm / 1_000_000.0
-    fallback_private_car_fuel_liters = (
-        fallback_private_car_vmt_km * cfg.private_car_fuel_l_per_100km / 100.0
+    fallback_private_car_energy_kwh = (
+        fallback_private_car_vmt_km * cfg.private_car_energy_kwh_per_km
     )
     fallback_private_car_co2_kg = (
-        fallback_private_car_fuel_liters * cfg.private_car_co2_kg_per_liter
+        fallback_private_car_energy_kwh * cfg.grid_co2_kg_per_kwh
+    )
+    fallback_private_car_energy_cost = (
+        fallback_private_car_energy_kwh * cfg.electricity_cost_per_kwh
     )
     fallback_private_car_avg_trip_km = (
         fallback_private_car_vmt_km / fallback_private_cars
@@ -1052,8 +1047,9 @@ def extract_results(
         if total_commuters else 0.0
     )
     system_total_vmt_km = total_vmt_km + fallback_private_car_vmt_km
-    system_total_fuel_liters = total_fuel_L + fallback_private_car_fuel_liters
+    system_total_energy_kwh = total_energy_kwh + fallback_private_car_energy_kwh
     system_total_co2_kg = total_co2_kg + fallback_private_car_co2_kg
+    system_energy_cost = system_total_energy_kwh * cfg.electricity_cost_per_kwh
     service_rate = round(100.0 * served_count / total_commuters, 2) if total_commuters else 0.0
     raw_solver_on_time_count = raw_solver_assigned_count - raw_solver_late_deliveries
     raw_solver_service_rate = (
@@ -1103,16 +1099,18 @@ def extract_results(
         "loaded_vmt_km":           round(total_loaded_mm / 1_000_000.0, 4),
         "empty_vmt_km":            round(total_empty_mm  / 1_000_000.0, 4),
         "empty_vmt_ratio":         round(total_empty_mm / max(1, total_vmt_mm), 4),
-        "total_fuel_liters":       round(total_fuel_L, 4),
-        "raw_av_total_fuel_liters": round(raw_total_fuel_L, 4),
-        "adjusted_av_total_fuel_liters": round(total_fuel_L, 4),
-        "fallback_private_car_fuel_liters": round(fallback_private_car_fuel_liters, 4),
-        "system_total_fuel_liters": round(system_total_fuel_liters, 4),
+        "total_energy_kwh":        round(total_energy_kwh, 4),
+        "raw_av_total_energy_kwh": round(raw_total_energy_kwh, 4),
+        "adjusted_av_total_energy_kwh": round(total_energy_kwh, 4),
+        "fallback_private_car_energy_kwh": round(fallback_private_car_energy_kwh, 4),
+        "system_total_energy_kwh": round(system_total_energy_kwh, 4),
         "total_co2_kg":            round(total_co2_kg, 4),
         "raw_av_total_co2_kg":     round(raw_total_co2_kg, 4),
         "adjusted_av_total_co2_kg": round(total_co2_kg, 4),
         "fallback_private_car_co2_kg": round(fallback_private_car_co2_kg, 4),
         "system_total_co2_kg":     round(system_total_co2_kg, 4),
+        "fallback_private_car_energy_cost": round(fallback_private_car_energy_cost, 4),
+        "system_energy_cost":      round(system_energy_cost, 4),
         "fallback_private_car_avg_trip_km": round(fallback_private_car_avg_trip_km, 4),
         "fallback_private_car_share_pct": round(fallback_private_car_share_pct, 2),
         "passenger_km":            round(total_pax_km, 4),
@@ -1292,6 +1290,7 @@ def main():
         raw_dist_mm_sub_baseline, original_count, cfg
     )
     print(f"  Total VMT (private):  {baseline['total_vmt_km']:.2f} km")
+    print(f"  Total energy (private): {baseline['total_energy_kwh']:.2f} kWh")
     print(f"  Total CO₂ (private):  {baseline['total_co2_kg']:.2f} kg")
     print(f"  Avg trip:             {baseline['avg_trip_km']:.2f} km")
     with open(baseline_json, "w") as f:
@@ -1359,7 +1358,7 @@ def main():
     # is NOT physical road distance.
     #
     # Our extracted VMT uses raw road distances (dist_mm_raw ÷ 1e6 = km),
-    # which is the physically meaningful metric for emissions and fuel.
+    # which is the physically meaningful metric for energy and emissions.
     # These two numbers will differ whenever penalties are active.
     #
     # The ratio (solver_distance / extracted_vmt_m) is the effective
@@ -1377,6 +1376,12 @@ def main():
         original_commuters=original_commuters,
         direct_station_dist_mm_by_commuter_id=direct_station_dist_mm_by_commuter_id
     )
+    metrics.update({
+        "baseline_total_vmt_km": baseline["total_vmt_km"],
+        "baseline_total_energy_kwh": baseline["total_energy_kwh"],
+        "baseline_total_co2_kg": baseline["total_co2_kg"],
+        "baseline_energy_cost": baseline["baseline_energy_cost"],
+    })
 
     # ── 9. Print summary ───────────────────────────────────────────────
     print(f"\n╔{banner}╗")
@@ -1395,7 +1400,7 @@ def main():
     print(f"  Total VMT:             {metrics['total_vmt_km']:.2f} km")
     print(f"  Empty VMT:             {metrics['empty_vmt_km']:.2f} km "
           f"({metrics['empty_vmt_ratio']*100:.1f}%)")
-    print(f"  Total fuel:            {metrics['total_fuel_liters']:.2f} L")
+    print(f"  Total energy:          {metrics['total_energy_kwh']:.2f} kWh")
     print(f"  Total CO₂:             {metrics['total_co2_kg']:.2f} kg")
     print(f"  Avg in-vehicle time:   {metrics['avg_in_vehicle_time_min']:.1f} min"
           f"  (max {metrics['max_in_vehicle_time_min']:.1f} min,"

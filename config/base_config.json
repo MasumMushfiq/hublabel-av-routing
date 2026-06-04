@@ -8,8 +8,7 @@
         "name": "Scooter",
         "capacity": 1,
         "max_speed_kmph": 25.0,
-        "fuel_l_per_100km": 2.0,
-        "co2_kg_per_liter": 2.35,
+        "energy_kwh_per_km": 0.016,
         "fleet_size": 56,
         "distance_band": {
           "lower_km": 0.0,
@@ -21,8 +20,7 @@
         "name": "Moped",
         "capacity": 2,
         "max_speed_kmph": 45.0,
-        "fuel_l_per_100km": 3.0,
-        "co2_kg_per_liter": 2.35,
+        "energy_kwh_per_km": 0.058,
         "fleet_size": 28,
         "distance_band": {
           "lower_km": 1.5,
@@ -34,8 +32,7 @@
         "name": "Car",
         "capacity": 4,
         "max_speed_kmph": 80.0,
-        "fuel_l_per_100km": 11.1,
-        "co2_kg_per_liter": 2.35,
+        "energy_kwh_per_km": 0.155,
         "fleet_size": 14,
         "distance_band": {
           "lower_km": 4.0,
@@ -47,8 +44,7 @@
         "name": "Minibus",
         "capacity": 8,
         "max_speed_kmph": 70.0,
-        "fuel_l_per_100km": 14.0,
-        "co2_kg_per_liter": 2.68,
+        "energy_kwh_per_km": 0.330,
         "fleet_size": 7,
         "distance_band": {
           "lower_km": 8.0,
@@ -79,18 +75,18 @@
   },
 
   "baseline_parameters": {
-    "private_car_fuel_l_per_100km": 11.1,
-    "private_car_co2_kg_per_liter": 2.35,
+    "private_car_energy_kwh_per_km": 0.155,
     "private_car_speed_kmph": 80.0
   },
 
+  "energy_model": {
+    "electricity_cost_per_kwh": 0.27,
+    "grid_co2_kg_per_kwh": 0.78,
+    "emission_factor_region": "Victoria",
+    "emission_factor_scope": "Scope 2 location-based"
+  },
+
   "cost_model": {
-    "fuel_price_per_liter": {
-      "Scooter": 1.90,
-      "Moped": 1.90,
-      "Car": 1.90,
-      "Minibus": 2.00
-    },
     "fixed_cost_per_vehicle": {
       "Scooter": 8.0,
       "Moped": 15.0,
