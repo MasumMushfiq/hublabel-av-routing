@@ -196,7 +196,8 @@ def extract_tap_ons(files: list[Path],
 # ── Step 3: Call C++ binary ────────────────────────────────────────────────
 
 def run_cpp_binary(cpp_bin: str, nodes_file: str, dest_node: int,
-                   n: int, labels: str, seed: int) -> tuple[list[dict], str]:
+                   n: int, labels: str, seed: int,
+                   origin_sampling: str) -> tuple[list[dict], str]:
     """
     Calls build_commuters_reachable. Returns (rows, tmp_path).
     Caller must os.unlink(tmp_path) when done.
@@ -212,6 +213,7 @@ def run_cpp_binary(cpp_bin: str, nodes_file: str, dest_node: int,
         "--n",               str(n),
         "--labels",          labels,
         "--seed",            str(seed),
+        "--sampling",        origin_sampling,
         "--out",             tmp_path,
         "--tw-policy",       "fixed",
         "--pickup-earliest", "07:00",   # placeholder — overwritten in merge
@@ -264,7 +266,7 @@ def load_node_coords(nodes_file: str) -> dict[int, tuple[float, float]]:
 
 def pair_and_filter(myki_rows: list[dict],
                     cpp_rows: list[dict],
-                    nodes_file: str,
+                    coord_nodes_file: str,
                     dest_node: int,
                     av_speed_kmh: float,
                     seed: int) -> list[dict]:
@@ -276,10 +278,10 @@ def pair_and_filter(myki_rows: list[dict],
 
     Then drop any pair where minimum travel time > window width.
     """
-    coords     = load_node_coords(nodes_file)
+    coords     = load_node_coords(coord_nodes_file)
     dest_coord = coords.get(dest_node)
     if dest_coord is None:
-        print(f"  WARNING: dest_node {dest_node} not in nodes file — "
+        print(f"  WARNING: dest_node {dest_node} not in coordinate nodes file — "
               f"skipping distance-aware pairing and feasibility filter.",
               file=sys.stderr)
 
@@ -358,6 +360,7 @@ def write_metadata(metadata_path: str,
                    destination_node: int,
                    myki_root: str,
                    nodes_file: str,
+                   coord_nodes_file: str,
                    cpp_bin: str,
                    labels: str,
                    config: str,
@@ -369,9 +372,16 @@ def write_metadata(metadata_path: str,
                    pickup_buffer_min: float,
                    av_speed_kmh: float,
                    seed: int,
+                   origin_sampling: str,
+                   origin_candidate_source: str | None,
+                   residential_candidate_metadata: str | None,
                    tap_ons_extracted: int,
                    reachable_origins_generated: int,
                    commuters_written: int) -> None:
+    origin_sampling_methods = {
+        "farthest": "farthest_point_ordering_then_bidirectional_reachability",
+        "random": "random_ordering_then_bidirectional_reachability",
+    }
     metadata = {
         "source": "Myki ScanOnTransaction",
         "station_name": "Melton",
@@ -379,6 +389,7 @@ def write_metadata(metadata_path: str,
         "myki_stop_ids": sorted(MELTON_STOP_IDS),
         "myki_root": myki_root,
         "nodes_file": nodes_file,
+        "coord_nodes_file": coord_nodes_file,
         "cpp_bin": cpp_bin,
         "labels": labels,
         "config": config,
@@ -393,12 +404,20 @@ def write_metadata(metadata_path: str,
         "tap_ons_extracted": tap_ons_extracted,
         "reachable_origins_generated": reachable_origins_generated,
         "commuters_written": commuters_written,
-        "origin_candidate_source": "road_network_nodes",
+        "origin_candidate_source": origin_candidate_source or "road_network_nodes",
         "origin_sampling_backend": "build_commuters_reachable",
-        "origin_sampling_method": (
-            "farthest_point_ordering_then_bidirectional_reachability"
+        "origin_sampling_mode": origin_sampling,
+        "origin_sampling_method": origin_sampling_methods.get(
+            origin_sampling,
+            f"{origin_sampling}_ordering_then_bidirectional_reachability",
         ),
-        "residential_address_based": False,
+        "residential_address_based": (
+            bool(residential_candidate_metadata)
+            or (
+                origin_candidate_source is not None
+                and "residential" in origin_candidate_source.lower()
+            )
+        ),
         "temporal_demand_source": "Myki tap-on times",
         "temporal_spatial_pairing": "seeded_random_pairing",
         "origin_generation_method": (
@@ -413,6 +432,8 @@ def write_metadata(metadata_path: str,
         },
         "output_csv": output_csv,
     }
+    if residential_candidate_metadata:
+        metadata["residential_candidate_metadata_file"] = residential_candidate_metadata
     Path(metadata_path).parent.mkdir(parents=True, exist_ok=True)
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
@@ -427,6 +448,10 @@ def main():
     )
     p.add_argument("--myki-root",      required=True)
     p.add_argument("--nodes-file",     required=True)
+    p.add_argument("--coord-nodes-file", default=None,
+                   help="Node coordinate CSV used for distance-aware pairing "
+                        "and haversine feasibility filtering. Defaults to "
+                        "--nodes-file for backward compatibility.")
     p.add_argument("--dest-node",      required=True, type=int)
     p.add_argument("--cpp-bin",        required=True)
     p.add_argument("--labels",         required=True)
@@ -446,9 +471,16 @@ def main():
     p.add_argument("--av-speed-kmh",   type=float, default=_DEFAULT_AV_SPEED_KMH,
                    help=f"AV speed for feasibility check in km/h (default: {_DEFAULT_AV_SPEED_KMH})")
     p.add_argument("--seed",           type=int, default=42)
+    p.add_argument("--origin-sampling", choices=["farthest", "random"], default="farthest",
+                   help="Origin candidate ordering passed to build_commuters_reachable.")
     p.add_argument("--metadata-out",   default=None,
                    help="Metadata JSON path. Defaults to <out_stem>_metadata.json next to --out.")
+    p.add_argument("--origin-candidate-source", default=None,
+                   help="Optional provenance label for the origin candidate pool.")
+    p.add_argument("--residential-candidate-metadata", default=None,
+                   help="Optional metadata JSON path for residential/address candidate generation.")
     args = p.parse_args()
+    coord_nodes_file = args.coord_nodes_file or args.nodes_file
 
     peak_start_str, peak_end_str = load_peak_window(args.config)
     peak_start    = datetime.strptime(peak_start_str, "%H:%M").time()
@@ -478,9 +510,11 @@ def main():
     print(f"  Extracted: {len(myki_rows)}")
 
     print(f"\n-- Step 2: Spatial origin nodes (C++) --")
+    print(f"  Origin candidates: {args.nodes_file}")
+    print(f"  Coordinate lookup: {coord_nodes_file}")
     cpp_rows, tmp_path = run_cpp_binary(
         args.cpp_bin, args.nodes_file, args.dest_node,
-        len(myki_rows), args.labels, args.seed,
+        len(myki_rows), args.labels, args.seed, args.origin_sampling,
     )
     print(f"  Reachable origins: {len(cpp_rows)}")
 
@@ -488,7 +522,7 @@ def main():
     print(f"  AV speed: {args.av_speed_kmh} km/h")
     merged = pair_and_filter(
         myki_rows, cpp_rows,
-        args.nodes_file, args.dest_node, args.av_speed_kmh,
+        coord_nodes_file, args.dest_node, args.av_speed_kmh,
         seed=args.seed,
     )
 
@@ -501,6 +535,7 @@ def main():
         destination_node=args.dest_node,
         myki_root=args.myki_root,
         nodes_file=args.nodes_file,
+        coord_nodes_file=coord_nodes_file,
         cpp_bin=args.cpp_bin,
         labels=args.labels,
         config=args.config,
@@ -512,6 +547,9 @@ def main():
         pickup_buffer_min=pickup_buffer,
         av_speed_kmh=args.av_speed_kmh,
         seed=args.seed,
+        origin_sampling=args.origin_sampling,
+        origin_candidate_source=args.origin_candidate_source,
+        residential_candidate_metadata=args.residential_candidate_metadata,
         tap_ons_extracted=len(myki_rows),
         reachable_origins_generated=len(cpp_rows),
         commuters_written=len(merged),

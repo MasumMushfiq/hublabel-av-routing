@@ -33,11 +33,11 @@ Current demand assumptions:
 - Temporal demand is derived from Myki train tap-on records.
 - Myki provides station arrival/tap-on timing, not home locations.
 - Current commuter origins are sampled from reachable road-network nodes.
-- Residential address/building-based origin generation is planned as the next improvement.
+- Residential-origin candidate preprocessing is implemented using inferred OSM residential/address candidates mapped to existing road-network nodes.
 
 Important limitation:
 
-> Current origins should not be described as true home addresses. They are sampled reachable road-network nodes paired with Myki-derived time deadlines.
+> Current origins should not be described as observed home addresses. Myki does not provide home locations; residential-origin runs use inferred OSM residential/address candidate road nodes paired with Myki-derived time deadlines.
 
 ---
 
@@ -58,9 +58,11 @@ extract train tap-ons for selected station and date
     ↓
 retain one tap-on per card/day
     ↓
+optionally preprocess OSM residential/address candidates into road-network candidate nodes
+    ↓
 call C++ reachable-origin sampler
     ↓
-sample reachable origin nodes from road-network nodes
+sample reachable origin nodes from the supplied candidate pool
     ↓
 pair sampled origins with Myki deadlines using a seed-controlled random pairing
     ↓
@@ -76,6 +78,7 @@ Current key inputs:
 ```text
 --myki-root
 --nodes-file
+--coord-nodes-file
 --dest-node
 --cpp-bin
 --labels
@@ -91,12 +94,15 @@ Current key inputs:
 --metadata-out
 ```
 
+`--nodes-file` is the origin candidate pool passed to `build_commuters_reachable`. For residential-origin runs this is typically `files/inputs/melton_residential_candidate_nodes.csv`. `--coord-nodes-file` is the full node-coordinate lookup used only for distance-aware pairing and the haversine feasibility filter; if omitted, it defaults to `--nodes-file` for backward compatibility.
+
 Current metadata should record:
 
 - station/source information,
 - destination node,
 - Myki root,
 - nodes file,
+- coordinate lookup nodes file,
 - C++ binary,
 - labels,
 - config file,
@@ -114,7 +120,7 @@ Current metadata should record:
 Current origin-generation modes:
 
 - `farthest`: spatially spread road-network candidate ordering.
-- `random`: random candidate ordering, useful for future residential candidate pools.
+- `random`: random candidate ordering. This is preferred for residential candidate pools because it better preserves candidate-density effects.
 
 ### 3.1 C++ Reachable-Origin Sampler
 
@@ -144,30 +150,60 @@ Supported sampling modes:
 Interpretation:
 
 - `farthest` uses greedy farthest-point ordering to spread origins spatially across the candidate pool.
-- `random` shuffles candidate order using the seed. This is useful for future residential/address candidate pools because it can preserve candidate-density effects.
+- `random` shuffles candidate order using the seed. This is preferred for residential/address candidate pools because it better preserves candidate-density effects.
 
 Important:
 
 > The sampler validates reachability, but it does not currently know whether a candidate is a residential address. Residential realism depends on the candidate pool supplied to the sampler.
 
 
-Future planned demand improvement:
+### 3.2 Residential-Origin Candidate Preprocessing
+
+Residential-origin candidate preprocessing is implemented in:
+
+```text
+python/build_residential_origin_candidates.py
+```
+
+The preprocessing reads:
+
+```text
+dataset/OSM_DATA/melton_osm.pbf
+files/inputs/melton_nodes_lat_lon.csv
+```
+
+It:
 
 ```text
 OSM/address/building residential candidates
     ↓
 map candidates to nearest road nodes
     ↓
-remove candidates very close to the station if using a walking threshold
+remove candidates within the walking threshold of Melton Station
     ↓
-sample from residential candidate pool
-    ↓
-validate bidirectional reachability
-    ↓
-pair with Myki tap-on deadlines
-    ↓
-write updated commuters.csv and metadata
+write residential candidate points, node mappings, unique node pool, and metadata
 ```
+
+The current default walking threshold is `800 m` direct haversine distance from Melton Station. It is not pedestrian-network walking distance.
+
+Generated residential candidate files:
+
+```text
+files/inputs/melton_residential_candidate_points.csv
+files/inputs/melton_residential_candidate_node_mapping.csv
+files/inputs/melton_residential_candidate_nodes.csv
+files/inputs/melton_residential_candidates_metadata.json
+```
+
+The resulting candidate node file can be passed to `python/build_myki_commuters.py` as:
+
+```text
+--nodes-file files/inputs/melton_residential_candidate_nodes.csv
+--coord-nodes-file files/inputs/melton_nodes_lat_lon.csv
+--origin-sampling random
+```
+
+`build_commuters_reachable` still performs bidirectional reachability validation after residential candidate preprocessing.
 
 ---
 
@@ -834,6 +870,9 @@ python/simulate_first_mile_utils.py
 python/build_myki_commuters.py
     Myki-based commuter CSV generation and metadata writing.
 
+python/build_residential_origin_candidates.py
+    OSM residential/address candidate extraction, nearest road-node mapping, walking-threshold filtering, and candidate metadata writing.
+
 python/tests/test_simulate_utils.py
     Unit tests for core utility behavior and metric formulas.
 
@@ -861,6 +900,10 @@ comparison.json
 simulation.log
 commuters.csv
 commuters_metadata.json
+melton_residential_candidate_points.csv
+melton_residential_candidate_node_mapping.csv
+melton_residential_candidate_nodes.csv
+melton_residential_candidates_metadata.json
 ```
 
 Do not normally commit:
@@ -1038,7 +1081,8 @@ Rules:
 Use this pattern when assigning future implementation tasks:
 
 ```text
-Please follow docs/PROJECT_SPEC.md as the source of truth. Do not change metric definitions, modeling assumptions, output field meanings, or experiment defaults unless explicitly requested. If the requested change conflicts with the spec, stop and report the conflict before editing code. Update docs/PROJECT_SPEC.md if your implementation changes any documented assumption, formula, field, or pipeline step.
+Please follow docs/PROJECT_SPEC.md as the source of truth. Do not change metric definitions, modeling assumptions, output field meanings, or experiment defaults unless explicitly requested. 
+If the requested change conflicts with the spec, stop and report the conflict before editing code. Update docs/PROJECT_SPEC.md if your implementation changes any documented assumption, formula, field, or pipeline step.
 ```
 
 ---
@@ -1047,9 +1091,10 @@ Please follow docs/PROJECT_SPEC.md as the source of truth. Do not change metric 
 
 Immediate next work:
 
-1. Create and validate this project specification.
-2. Update the commuter-origin pipeline toward residential address/building candidates.
-3. Update runners and plotting scripts one by one for the new energy metrics.
-4. Select additional station case studies.
-5. Rerun key experiments with the corrected evaluation and all-electric model.
-6. Share updated outputs with supervisors before the next meeting.
+1. Create and validate this project specification. --> Looks good
+2. Validate residential address/building candidate demand generation in experiments.
+3. Update AV fleet cost assumptions with cited real-world values.
+4. Update runners and plotting scripts one by one for the new energy metrics.
+5. Select additional station case studies.
+6. Rerun key experiments with the corrected evaluation and all-electric model.
+7. Share updated outputs with supervisors before the next meeting.
