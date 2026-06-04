@@ -40,7 +40,8 @@
 //     --window-width-minutes 30
 //
 //  Optional flags (all policies):
-//     [--labels LABEL_PREFIX]  [--seed 42]  [--allow-dest-as-origin]
+//     [--labels LABEL_PREFIX]  [--seed 42]  [--sampling farthest|random]
+//     [--allow-dest-as-origin]
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -98,6 +99,7 @@ struct Args {
     int         n             = -1;
     std::string out_path;
     uint64_t    seed          = 42;
+    std::string sampling      = "farthest";
     bool        allow_dest_as_origin = false;
 
     // ── Time-window policy selection ──────────────────────────────────────
@@ -118,7 +120,8 @@ static void print_usage(const char* prog) {
     std::cerr
         << "Usage:\n"
         << "  " << prog << " --nodes NODES.csv --dest-node ID --n N --out commuters.csv\n"
-        << "     [--labels LABEL_PREFIX]  [--seed 42]  [--allow-dest-as-origin]\n"
+        << "     [--labels LABEL_PREFIX]  [--seed 42]  [--sampling farthest|random]\n"
+        << "     [--allow-dest-as-origin]\n"
         << "\n"
         << "  Time-window policy (choose one):\n"
         << "    --tw-policy fixed\n"
@@ -149,6 +152,7 @@ static bool parse_args(int argc, char** argv, Args& a) {
         else if (k == "--n")                  { a.n            = std::stoi(require_next()); }
         else if (k == "--out")                { a.out_path     = require_next(); }
         else if (k == "--seed")               { a.seed         = std::stoull(require_next()); }
+        else if (k == "--sampling")           { a.sampling     = require_next(); }
         else if (k == "--labels")             { a.labels_prefix= require_next(); }
         else if (k == "--allow-dest-as-origin") { a.allow_dest_as_origin = true; }
 
@@ -175,6 +179,12 @@ static bool parse_args(int argc, char** argv, Args& a) {
                    && a.n > 0 && !a.out_path.empty();
     if (!core_ok) {
         print_usage(argv[0]);
+        return false;
+    }
+
+    if (a.sampling != "farthest" && a.sampling != "random") {
+        std::cerr << "Unknown --sampling '" << a.sampling
+                  << "'.  Supported: farthest, random\n";
         return false;
     }
 
@@ -351,8 +361,16 @@ int main(int argc, char** argv) {
                   << nodes.size() << ".\n";
     }
 
-    // ── Spatial ordering ───────────────────────────────────────────────────
-    auto order = farthest_point_ordering(nodes, args.seed);
+    // ── Candidate ordering ─────────────────────────────────────────────────
+    std::vector<size_t> order;
+    if (args.sampling == "farthest") {
+        order = farthest_point_ordering(nodes, args.seed);
+    } else {
+        order.resize(nodes.size());
+        for (size_t i = 0; i < nodes.size(); ++i) order[i] = i;
+        std::mt19937_64 rng(args.seed);
+        std::shuffle(order.begin(), order.end(), rng);
+    }
 
     // ── Load distance labels ───────────────────────────────────────────────
     if (!init_distance_labels(args.labels_prefix)) {
@@ -368,6 +386,7 @@ int main(int argc, char** argv) {
     std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
     std::cout << "║              VALIDATING COMMUTER REACHABILITY                  ║\n";
     std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
+    std::cout << "  Sampling mode      : " << args.sampling << "\n";
     std::cout << "  Time-window policy : " << policy->description() << "\n\n";
 
     // ── Collect reachable commuters ────────────────────────────────────────

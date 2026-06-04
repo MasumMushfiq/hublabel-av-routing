@@ -1091,7 +1091,7 @@ If the requested change conflicts with the spec, stop and report the conflict be
 
 Immediate next work:
 
-1. Create and validate this project specification. --> Looks good
+1. Create and validate this project specification. Completed
 2. Validate residential address/building candidate demand generation in experiments.
 3. Update AV fleet cost assumptions with cited real-world values.
 4. Update runners and plotting scripts one by one for the new energy metrics.
