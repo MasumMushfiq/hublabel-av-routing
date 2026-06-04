@@ -33,7 +33,7 @@ DUMP_BIN        := $(BIN_DIR)/dump_distance_matrix
 
 DATASET_DIR    := dataset/MELTON
 INPUT_DIR      := files/inputs
-MATRICES_DIR   := files/matrices
+MATRICES_DIR   := $(DATASET_DIR)/melton_generic_matrix
 CONFIG_DIR     := config
 
 GRAPH_DIST     := $(DATASET_DIR)/melton_graph_distance.txt
@@ -185,13 +185,13 @@ DEST_NODE      := 19858
 SEED           := 42
 
 RESIDENTIAL_OSM_PBF              := dataset/OSM_DATA/melton_osm.pbf
-RESIDENTIAL_CANDIDATE_NODES      := files/inputs/melton_residential_candidate_nodes.csv
-RESIDENTIAL_CANDIDATE_POINTS     := files/inputs/melton_residential_candidate_points.csv
-RESIDENTIAL_CANDIDATE_MAPPING    := files/inputs/melton_residential_candidate_node_mapping.csv
-RESIDENTIAL_CANDIDATE_METADATA   := files/inputs/melton_residential_candidates_metadata.json
-RESIDENTIAL_COMMUTERS_CSV        := files/inputs/commuters_residential.csv
-RESIDENTIAL_COMMUTERS_METADATA   := files/inputs/commuters_residential_metadata.json
-RESIDENTIAL_MATRICES_DIR         := dataset/MELTON/melton_residential_matrix
+RESIDENTIAL_CANDIDATE_NODES      := $(INPUT_DIR)/melton_residential_candidate_nodes.csv
+RESIDENTIAL_CANDIDATE_POINTS     := $(INPUT_DIR)/melton_residential_candidate_points.csv
+RESIDENTIAL_CANDIDATE_MAPPING    := $(INPUT_DIR)/melton_residential_candidate_node_mapping.csv
+RESIDENTIAL_CANDIDATE_METADATA   := $(INPUT_DIR)/melton_residential_candidates_metadata.json
+RESIDENTIAL_COMMUTERS_CSV        := $(INPUT_DIR)/commuters_residential.csv
+RESIDENTIAL_COMMUTERS_METADATA   := $(INPUT_DIR)/commuters_residential_metadata.json
+RESIDENTIAL_MATRICES_DIR         := $(DATASET_DIR)/melton_residential_matrix
 RESIDENTIAL_SMOKE_DIR            := experiments/test_results/residential_smoke_balanced
 RESIDENTIAL_WALKING_THRESHOLD_M  := 800
 
