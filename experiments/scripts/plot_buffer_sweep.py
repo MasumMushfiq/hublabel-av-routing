@@ -34,26 +34,19 @@ BUFFER_VALUES = [0, 1, 2, 3, 4, 5]   # minutes
 
 def setup_pub_style():
     apply_pub_style()
-    return
 
-    plt.rcParams.clear()
-    plt.rcParams.update({
-        "font.family":    "serif",
-        "font.serif":     ["Times New Roman", "DejaVu Serif", "serif"],
-        "figure.dpi":     150,
-        "savefig.dpi":    300,
-        "axes.linewidth": 1.2,
-        "grid.alpha":     0.3,
-        "grid.linewidth": 0.8,
-        "font.size":      10,
-        "axes.labelsize": 11,
-        "axes.titlesize": 12,
-        "legend.fontsize": 9,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "pdf.fonttype":   42,
-        "ps.fonttype":    42,
-    })
+
+def system_reduction(change_pct, system_total, baseline_total, run_path, metric_label):
+    if change_pct is not None:
+        return float(change_pct), -float(change_pct)
+    if system_total is not None and baseline_total:
+        reduction = (float(baseline_total) - float(system_total)) / float(baseline_total) * 100
+        return -reduction, reduction
+    print(
+        f"  WARNING: missing system {metric_label} fields for {run_path}; "
+        "setting system reduction to NaN"
+    )
+    return float("nan"), float("nan")
 
 
 def savefig(fig, base_path):
@@ -79,41 +72,78 @@ def aggregate(results_dir):
         for run_dir in sorted(os.listdir(cond_dir)):
             mpath = os.path.join(cond_dir, run_dir, "metrics.json")
             bpath = os.path.join(cond_dir, run_dir, "baseline.json")
+            cpath = os.path.join(cond_dir, run_dir, "comparison.json")
             if not os.path.isfile(mpath):
                 continue
             with open(mpath) as f:
                 m = json.load(f)
-            baseline_vmt = baseline_co2 = 0.0
+            c = {}
+            if os.path.isfile(cpath):
+                with open(cpath) as f:
+                    c = json.load(f)
+
+            baseline_vmt = baseline_energy = baseline_co2 = 0.0
             if os.path.isfile(bpath):
                 with open(bpath) as f:
                     b = json.load(f)
-                baseline_vmt = b.get("total_vmt_km", 0.0)
-                baseline_co2 = b.get("total_co2_kg", 0.0)
+                baseline_vmt = b.get("baseline_total_vmt_km", b.get("total_vmt_km", 0.0))
+                baseline_energy = b.get(
+                    "baseline_total_energy_kwh",
+                    b.get("total_energy_kwh", 0.0),
+                )
+                baseline_co2 = b.get("baseline_total_co2_kg", b.get("total_co2_kg", 0.0))
 
             served   = m.get("served_commuters", 0)
             total    = m.get("total_commuters", 1)
-            vmt      = m.get("total_vmt_km", 0.0)
-            co2      = m.get("total_co2_kg", 0.0)
             late     = m.get("late_deliveries", 0)
             avg_pax  = m.get("avg_passengers_per_trip", 0.0)
             v_used   = m.get("vehicles_used", 1)
             v_trips  = m.get("vehicle_trips", 1)
+            fallback_private_cars = c.get(
+                "fallback_private_cars",
+                m.get("fallback_private_cars", late + m.get("unserved_commuters", 0)),
+            )
 
-            vmt_red = (baseline_vmt - vmt) / baseline_vmt * 100 if baseline_vmt else 0.0
-            co2_red = (baseline_co2 - co2) / baseline_co2 * 100 if baseline_co2 else 0.0
-            service_rate = m.get("service_rate", served / total * 100 if total else 0.0)
-            effective_on_time = m.get(
-                "effective_on_time_service_rate",
-                max(0, served - late) / total * 100 if total else 0.0,
+            service_rate = c.get(
+                "service_rate_pct",
+                m.get("service_rate", served / total * 100 if total else 0.0),
+            )
+            on_time_rate = c.get("on_time_rate_pct", m.get("on_time_rate", service_rate))
+            effective_on_time = service_rate
+
+            system_vmt = m.get("system_total_vmt_km")
+            system_energy = m.get("system_total_energy_kwh")
+            system_co2 = m.get("system_total_co2_kg")
+
+            system_vmt_change_pct = c.get("system_vmt_change_pct", m.get("system_vmt_change_pct"))
+            system_energy_change_pct = c.get(
+                "system_energy_change_pct",
+                m.get("system_energy_change_pct"),
+            )
+            system_co2_change_pct = c.get("system_co2_change_pct", m.get("system_co2_change_pct"))
+
+            run_path = os.path.join(cond_dir, run_dir)
+            system_vmt_change_pct, vmt_red = system_reduction(
+                system_vmt_change_pct, system_vmt, baseline_vmt, run_path, "VMT"
+            )
+            system_energy_change_pct, energy_red = system_reduction(
+                system_energy_change_pct, system_energy, baseline_energy, run_path, "energy"
+            )
+            system_co2_change_pct, co2_red = system_reduction(
+                system_co2_change_pct, system_co2, baseline_co2, run_path, "CO2"
             )
 
             run_metrics.append({
                 "service_rate":    service_rate,
+                "on_time_rate":    on_time_rate,
                 "effective_on_time_service_rate": effective_on_time,
                 "late":            late,
-                "vmt":             vmt,
+                "fallback_private_cars": fallback_private_cars,
+                "system_vmt_change_pct": system_vmt_change_pct,
+                "system_energy_change_pct": system_energy_change_pct,
+                "system_co2_change_pct": system_co2_change_pct,
                 "vmt_red":         vmt_red,
-                "co2":             co2,
+                "energy_red":      energy_red,
                 "co2_red":         co2_red,
                 "avg_pax":         avg_pax,
                 "vehicles_used":   v_used,
@@ -163,31 +193,31 @@ def find_knee(buf_vals, late_means, service_means, late_tol=5.0):
 def fig_buffer_sweep(df, out_dir):
     """
     Dual-axis line plot:
-      Left  (blue)  : late arrivals (mean ± 1σ)
-      Right (green) : service rate  (mean ± 1σ)
+      Left  (blue)  : fallback private cars (mean ± 1σ)
+      Right (green) : service rate          (mean ± 1σ)
     Vertical dashed line at the recommended knee.
     """
     C_LATE = "#2196F3"
     C_SVC  = "#4CAF50"
 
     x         = df["buffer_min"].to_numpy()
-    late_m    = df["late_mean"].to_numpy()
-    late_s    = df["late_std"].fillna(0).to_numpy()
+    fallback_m = df["fallback_private_cars_mean"].to_numpy()
+    fallback_s = df["fallback_private_cars_std"].fillna(0).to_numpy()
     svc_m     = df["service_rate_mean"].to_numpy()
     svc_s     = df["service_rate_std"].fillna(0).to_numpy()
 
-    knee = find_knee(x, late_m, svc_m)
+    knee = find_knee(x, fallback_m, svc_m)
 
     fig, ax1 = plt.subplots(figsize=(8, 5))
     ax2 = ax1.twinx()
 
-    # Late arrivals — left axis
-    ax1.plot(x, late_m, marker="o", ms=5, lw=1.8,
-             color=C_LATE, label="Late arrivals", zorder=3)
-    ax1.fill_between(x, late_m - late_s, late_m + late_s,
+    # Fallback private cars — left axis
+    ax1.plot(x, fallback_m, marker="o", ms=5, lw=1.8,
+             color=C_LATE, label="Fallback private cars", zorder=3)
+    ax1.fill_between(x, fallback_m - fallback_s, fallback_m + fallback_s,
                      alpha=0.18, color=C_LATE)
     ax1.set_xlabel("Pre-departure margin (minutes)")
-    ax1.set_ylabel("Late arrivals (count)", color=C_LATE)
+    ax1.set_ylabel("Fallback private cars (count)", color=C_LATE)
     ax1.tick_params(axis="y", colors=C_LATE)
     ax1.set_xticks(x)
     ax1.yaxis.set_minor_locator(AutoMinorLocator())
@@ -235,17 +265,17 @@ def fig_buffer_sweep(df, out_dir):
 # ── Console summary ──────────────────────────────────────────────────────────
 
 def print_summary(df):
-    print(f"\n  {'Buf(min)':>8}  {'Runs':>4}  {'Served%':>8}  "
-          f"{'Late':>6}  {'EffOT%':>8}  {'VMT red%':>9}  "
-          f"{'CO2 red%':>9}  {'Pax/trip':>8}")
-    print(f"  {'-'*75}")
+    print(f"\n  {'Buf(min)':>8}  {'Runs':>4}  {'Service%':>9}  "
+          f"{'Fallback':>8}  {'Sys VMT%':>9}  {'Sys kWh%':>9}  "
+          f"{'Sys CO2%':>9}  {'Pax/trip':>8}")
+    print(f"  {'-'*84}")
     for _, r in df.iterrows():
         print(f"  {int(r['buffer_min']):>8}  "
               f"{int(r['n_runs']):>4}  "
-              f"{r['service_rate_mean']:>7.1f}%  "
-              f"{r['late_mean']:>6.1f}  "
-              f"{r['effective_on_time_service_rate_mean']:>7.1f}%  "
+              f"{r['service_rate_mean']:>8.1f}%  "
+              f"{r['fallback_private_cars_mean']:>8.1f}  "
               f"{r['vmt_red_mean']:>8.1f}%  "
+              f"{r['energy_red_mean']:>8.1f}%  "
               f"{r['co2_red_mean']:>8.1f}%  "
               f"{r['avg_pax_mean']:>8.2f}")
 

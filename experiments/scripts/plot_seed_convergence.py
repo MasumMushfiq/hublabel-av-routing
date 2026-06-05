@@ -2,7 +2,7 @@
 """
 plot_seed_convergence.py
 ────────────────────────
-Plots seed convergence for PyVRP/HGS at the selected solver time limit (default: 180 s), mirroring Figure 2.1
+Plots seed convergence for PyVRP/HGS at the selected solver time limit (default: 300 s), mirroring Figure 2.1
 (VMT convergence) from the confirmation report.
 
 For each metric, shows:
@@ -42,26 +42,19 @@ matplotlib.rcParams["ps.fonttype"]  = 42
 
 def setup_pub_style():
     apply_pub_style()
-    return
 
-    plt.rcParams.clear()
-    plt.rcParams.update({
-        "font.family":    "serif",
-        "font.serif":     ["Times New Roman", "DejaVu Serif", "serif"],
-        "figure.dpi":     150,
-        "savefig.dpi":    300,
-        "axes.linewidth": 1.2,
-        "grid.alpha":     0.3,
-        "grid.linewidth": 0.8,
-        "font.size":      10,
-        "axes.labelsize": 11,
-        "axes.titlesize": 12,
-        "legend.fontsize": 9,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "pdf.fonttype":   42,
-        "ps.fonttype":    42,
-    })
+
+def system_reduction(change_pct, system_total, baseline_total, run_path, metric_label):
+    if change_pct is not None:
+        return float(change_pct), -float(change_pct)
+    if system_total is not None and baseline_total:
+        reduction = (float(baseline_total) - float(system_total)) / float(baseline_total) * 100
+        return -reduction, reduction
+    print(
+        f"  WARNING: missing system {metric_label} fields for {run_path}; "
+        "setting system reduction to NaN"
+    )
+    return float("nan"), float("nan")
 
 
 def savefig(fig, base_path):
@@ -85,39 +78,78 @@ def load_series(results_dir):
     while True:
         mpath = os.path.join(results_dir, f"run_{seed}", "metrics.json")
         bpath = os.path.join(results_dir, f"run_{seed}", "baseline.json")
+        cpath = os.path.join(results_dir, f"run_{seed}", "comparison.json")
         if not os.path.isfile(mpath):
             break
         with open(mpath) as f:
             m = json.load(f)
-        baseline_vmt = baseline_co2 = 0.0
+        c = {}
+        if os.path.isfile(cpath):
+            with open(cpath) as f:
+                c = json.load(f)
+
+        baseline_vmt = baseline_energy = baseline_co2 = 0.0
         if os.path.isfile(bpath):
             with open(bpath) as f:
                 b = json.load(f)
-            baseline_vmt = b.get("total_vmt_km", 0.0)
-            baseline_co2 = b.get("total_co2_kg", 0.0)
+            baseline_vmt = b.get("baseline_total_vmt_km", b.get("total_vmt_km", 0.0))
+            baseline_energy = b.get(
+                "baseline_total_energy_kwh",
+                b.get("total_energy_kwh", 0.0),
+            )
+            baseline_co2 = b.get("baseline_total_co2_kg", b.get("total_co2_kg", 0.0))
 
         served  = m.get("served_commuters", 0)
         total   = m.get("total_commuters", 1)
-        vmt     = m.get("total_vmt_km", 0.0)
-        co2     = m.get("total_co2_kg", 0.0)
         late    = m.get("late_deliveries", 0)
         avg_pax = m.get("avg_passengers_per_trip", 0.0)
-
-        service_rate = m.get("service_rate", served / total * 100 if total else 0.0)
-        effective_on_time = m.get(
-            "effective_on_time_service_rate",
-            max(0, served - late) / total * 100 if total else 0.0,
+        fallback_private_cars = c.get(
+            "fallback_private_cars",
+            m.get("fallback_private_cars", late + m.get("unserved_commuters", 0)),
         )
-        vmt_red = (baseline_vmt - vmt) / baseline_vmt * 100 if baseline_vmt else 0.0
-        co2_red = (baseline_co2 - co2) / baseline_co2 * 100 if baseline_co2 else 0.0
+
+        service_rate = c.get(
+            "service_rate_pct",
+            m.get("service_rate", served / total * 100 if total else 0.0),
+        )
+        on_time_rate = c.get("on_time_rate_pct", m.get("on_time_rate", service_rate))
+        effective_on_time = service_rate
+
+        system_vmt = m.get("system_total_vmt_km")
+        system_energy = m.get("system_total_energy_kwh")
+        system_co2 = m.get("system_total_co2_kg")
+
+        system_vmt_change_pct = c.get("system_vmt_change_pct", m.get("system_vmt_change_pct"))
+        system_energy_change_pct = c.get(
+            "system_energy_change_pct",
+            m.get("system_energy_change_pct"),
+        )
+        system_co2_change_pct = c.get("system_co2_change_pct", m.get("system_co2_change_pct"))
+
+        run_path = os.path.join(results_dir, f"run_{seed}")
+        system_vmt_change_pct, vmt_red = system_reduction(
+            system_vmt_change_pct, system_vmt, baseline_vmt, run_path, "VMT"
+        )
+        system_energy_change_pct, energy_red = system_reduction(
+            system_energy_change_pct, system_energy, baseline_energy, run_path, "energy"
+        )
+        system_co2_change_pct, co2_red = system_reduction(
+            system_co2_change_pct, system_co2, baseline_co2, run_path, "CO2"
+        )
 
         records.append({
             "service_rate": service_rate,
+            "on_time_rate": on_time_rate,
             "effective_on_time_service_rate": effective_on_time,
+            "system_vmt_change_pct": system_vmt_change_pct,
+            "system_energy_change_pct": system_energy_change_pct,
+            "system_co2_change_pct": system_co2_change_pct,
             "vmt_red":      vmt_red,
+            "energy_red":   energy_red,
             "co2_red":      co2_red,
             "avg_pax":      avg_pax,
             "late":         late,
+            "fallback_private_cars": fallback_private_cars,
         })
         seed += 1
 
@@ -218,19 +250,19 @@ def draw_convergence_panel(ax, values, ylabel, title, color, tol=0.01):
 
 def fig_combined(series, n, out_dir):
     COLORS = {
-        "effective_on_time_service_rate": "#2196F3",
+        "service_rate": "#2196F3",
         "vmt_red":      "#4CAF50",
         "co2_red":      "#FF9800",
         "avg_pax":      "#9C27B0",
     }
 
     PANELS = [
-        ("vmt_red",      "VMT reduction vs private (%)",
-         "(a) VMT Reduction"),
-        ("effective_on_time_service_rate", "Effective on-time service (%)",
-         "(b) Effective On-time Service"),
-        (r"co2_red",     r"CO$_2$ reduction vs private (%)",
-         r"(c) CO$_2$ Reduction"),
+        ("vmt_red",      "System VMT reduction vs private (%)",
+         "(a) System VMT Reduction"),
+        ("service_rate", "Service rate (%)",
+         "(b) Service Rate"),
+        (r"co2_red",     r"System CO$_2$ reduction vs private (%)",
+         r"(c) System CO$_2$ Reduction"),
         ("avg_pax",      "Avg passengers per trip",
          "(d) Pooling Efficiency"),
     ]
@@ -261,7 +293,7 @@ def fig_vmt_reduction(series, n, out_dir):
     draw_convergence_panel(
         ax,
         series["vmt_red"],
-        "VMT reduction vs private (%)",
+        "System VMT reduction vs private (%)",
         "",
         color="#4CAF50",
         tol=0.01,
@@ -284,10 +316,11 @@ def print_summary(series, n):
     print(f"  {'-'*72}")
     labels = {
         "service_rate": "Service rate (%)",
-        "effective_on_time_service_rate": "Eff. on-time (%)",
-        "vmt_red":      "VMT reduction (%)",
-        "co2_red":      "CO2 reduction (%)",
+        "vmt_red":      "System VMT red. (%)",
+        "energy_red":   "System kWh red. (%)",
+        "co2_red":      "System CO2 red. (%)",
         "avg_pax":      "Avg pax/trip",
+        "fallback_private_cars": "Fallback cars",
     }
     for key, label in labels.items():
         vals = series[key]

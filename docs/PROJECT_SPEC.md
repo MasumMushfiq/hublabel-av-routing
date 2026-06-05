@@ -224,6 +224,7 @@ Paper framing:
 - Main results should use residential-origin demand.
 - Generic reachable-node demand may be reported compactly as a robustness check if the qualitative fleet tradeoffs are similar.
 - If generic-node and residential-origin results differ, residential-origin results should be treated as more defensible for the main analysis because they are spatially grounded in residential/address candidates.
+- Calibration experiments and main Melton experiments should use residential-origin demand as the primary demand input. Generic reachable-node demand is retained only as a robustness/sensitivity comparison.
 
 ---
 
@@ -534,6 +535,12 @@ electricity_cost_per_kwh = 0.27 AUD/kWh
 grid_co2_kg_per_kwh = 0.78 kg CO2-e/kWh
 ```
 
+Energy assumptions are documented in:
+
+```text
+docs/energy_assumptions_reference.md
+```
+
 Private-car baseline/fallback:
 
 ```text
@@ -691,6 +698,12 @@ Cost model inputs are in:
 config/base_config.json
 ```
 
+Cost assumptions are documented in:
+
+```text
+docs/cost_assumptions_reference.md
+```
+
 Current base cost assumptions:
 
 | Vehicle type | Fixed cost | Maintenance cost |
@@ -725,6 +738,8 @@ Important:
 - AV fleet cost excludes fallback private-car energy/cost.
 - Fallback private-car energy cost may be stored in metrics but is not part of `av_total_operating_cost`.
 - Fixed cost uses configured fleet size, not used vehicles.
+- Real AUD fixed and maintenance costs belong in `cost_model.fixed_cost_per_vehicle` and `cost_model.maintenance_cost_per_km`.
+- Do not put real AUD costs into `fleet.vehicle_types[].fixed_cost_km_equiv`; that field affects the solver objective.
 
 Cost outputs include:
 
@@ -744,11 +759,11 @@ av_cost_by_vehicle_type
 
 ## 15. Default Experiment Settings
 
-Current default settings from `config/base_config.json`:
+Current calibrated residential-origin settings:
 
 ```text
 solver: PyVRP/HGS
-time_limit_seconds: 180
+time_limit_seconds: 300
 time_window.mode: fixed_slots
 time_window.interval_minutes: 20
 time_window.start_time_minutes: 420
@@ -759,6 +774,28 @@ alpha: 1.0
 beta: 1.0
 preference_scale_m: 500
 ```
+
+Calibration decisions:
+
+- Solver time-limit calibration under residential-origin demand selected `300` seconds as the practical runtime for calibration reruns and main residential experiments.
+- VMT continues improving with longer runtimes; do not describe VMT as converged at 300 seconds. The 300-second limit is selected as a practical compromise because service and energy/CO2 are stable, VMT improves over 180 seconds, and runtime remains computationally manageable.
+- Seed convergence was rerun at 300 seconds using 50 independent seeds.
+- Broad scenario experiments use 15 independent seeds, justified by the 50-seed convergence check at 300 seconds.
+- Pre-departure margin remains `0` minutes because 0--5 minute margins produced only marginal metric differences and zero margin avoids adding artificial slack.
+- Time-window representation remains fixed 20-minute slots.
+- No explicit distance-band penalty is used. The multiplicative penalty reduced pooling and system VMT savings without improving service reliability, so `penalty_mode` remains `none`.
+
+Calibration and reporting should use system-level metrics when fallback private cars exist:
+
+```text
+service_rate
+fallback_private_cars
+system_total_vmt_km / system_vmt_change_pct
+system_total_energy_kwh / system_energy_change_pct
+system_total_co2_kg / system_co2_change_pct
+```
+
+Do not report service coverage as 100% under the current fallback framing. `service_rate` is the share of commuters served on time by AV after pruning; remaining commuters are represented by `fallback_private_cars`.
 
 Current standard final experiment plan:
 
@@ -877,8 +914,11 @@ Core files:
 config/base_config.json
     Canonical active experiment configuration.
 
-config/energy_assumptions_reference.md
-    Source-trace file for electric energy, emissions, and cost assumptions.
+docs/energy_assumptions_reference.md
+    Source-trace file for electric energy and emissions assumptions.
+
+docs/cost_assumptions_reference.md
+    Source-trace file for AV fleet cost assumptions.
 
 python/simulate_first_mile_pyvrp.py
     Main PyVRP simulation, solution extraction, pruning, metrics, and output writing.
@@ -1112,8 +1152,8 @@ If the requested change conflicts with the spec, stop and report the conflict be
 Immediate next work:
 
 1. Create and validate this project specification. Completed
-2. Treat residential-origin demand as the main Melton demand input.
-3. Redo solver/configuration calibration experiments under residential-origin demand.
+2. Treat residential-origin demand as the main Melton demand input. Completed
+3. Redo solver/configuration calibration experiments under residential-origin demand. Completed; time-limit, seed convergence, pre-departure margin, time-window representation, and distance-band penalty decisions are confirmed.
 4. Refine AV fleet cost assumptions using real cited values before final main fleet-composition, representative, capacity, and cost-related interpretation.
 5. Rerun the main residential full-grid and representative experiments with the refined cost assumptions.
 6. Keep generic reachable-node results as a robustness/sensitivity comparison.

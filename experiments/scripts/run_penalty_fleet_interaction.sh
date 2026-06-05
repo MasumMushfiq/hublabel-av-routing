@@ -5,10 +5,12 @@ TOTAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4
 PARALLEL_JOBS=${PARALLEL_JOBS:-$(( TOTAL_CORES > 2 ? TOTAL_CORES - 2 : 1 ))}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 PYVRP_SCRIPT="$ROOT/python/simulate_first_mile_pyvrp.py"
 COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters.csv}"
 STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
 MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
+BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/base_config.json}"
 DRY_RUN=${DRY_RUN:-0}
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
@@ -30,10 +32,14 @@ DRY_RUN=${DRY_RUN:-0}
 # =============================================================================
 
 EXPERIMENT="penalty_fleet_interaction_224seats"
-RESULTS_DIR="$ROOT/experiments/results/$EXPERIMENT"
+OUTPUT_ROOT="${OUTPUT_DIR:-$ROOT/experiments/results}"
+if [[ "$OUTPUT_ROOT" != /* ]]; then
+    OUTPUT_ROOT="$ROOT/$OUTPUT_ROOT"
+fi
+RESULTS_DIR="$OUTPUT_ROOT/$EXPERIMENT"
 CONFIGS_DIR="$RESULTS_DIR/configs"
 # Defaults (can be overridden from environment)
-TIME_LIMIT_SECONDS=${TIME_LIMIT_SECONDS:-180}
+TIME_LIMIT_SECONDS=${TIME_LIMIT_SECONDS:-300}
 N_SEEDS=${N_SEEDS:-15}
 
 LABELS=(none_x0.90 none_x1.00 none_x1.10 none_x1.25
@@ -57,9 +63,8 @@ echo "  Fleet map    : x0.90=50S/25M/13C/6MB (200), x1.00=56S/28M/14C/7MB (224),
 echo "  Time limit   : ${TIME_LIMIT_SECONDS}s"
 echo "  Experiment folder: $EXPERIMENT"
 echo "  Seeds        : $N_SEEDS  |  Total jobs: $TOTAL  |  Parallel: $PARALLEL_JOBS workers"
-[[ $DRY_RUN == 1 ]] && { echo "  DRY RUN"; cat "$JOB_FILE"; exit 0; }
 
-for f in "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV"; do
+for f in "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$BASE_CONFIG"; do
     [[ -f "$f" ]] || { echo "ERROR: Missing file: $f"; exit 1; }
 done
 [[ -d "$MATRICES_DIR" ]] || { echo "ERROR: Missing matrices dir: $MATRICES_DIR"; exit 1; }
@@ -67,146 +72,52 @@ done
 rm -rf "$CONFIGS_DIR"
 mkdir -p "$CONFIGS_DIR"
 echo "Writing configs..."
+"$PYTHON_BIN" - "$BASE_CONFIG" "$CONFIGS_DIR" "$TIME_LIMIT_SECONDS" "${LABELS[@]}" << 'PYEOF'
+import copy
+import json
+import sys
+from pathlib import Path
 
-# none x0.90
-cat > "$CONFIGS_DIR/none_x0.90.json" << JSEOF
-{
-    "experiment_name": "penalty_fleet_none_x0.90",
-    "fleet": {"vehicle_types": [
-            {"name":"Scooter","capacity":1,"max_speed_kmph":25,"fuel_l_per_100km":2.0,"co2_kg_per_liter":2.35,"fleet_size":50,"distance_band":{"lower_km":0.0,"upper_km":2.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Moped","capacity":2,"max_speed_kmph":45,"fuel_l_per_100km":3.0,"co2_kg_per_liter":2.35,"fleet_size":25,"distance_band":{"lower_km":1.5,"upper_km":6.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Car","capacity":4,"max_speed_kmph":80,"fuel_l_per_100km":11.1,"co2_kg_per_liter":2.35,"fleet_size":13,"distance_band":{"lower_km":4.0,"upper_km":12.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Minibus","capacity":8,"max_speed_kmph":70,"fuel_l_per_100km":14.0,"co2_kg_per_liter":2.68,"fleet_size":6,"distance_band":{"lower_km":8.0,"upper_km":20.0},"fixed_cost_km_equiv":0.0}
-    ]},
-    "time_window": {"mode":"fixed_slots","interval_minutes":20,"start_time_minutes":420,"end_time_minutes":570,"buffer_before_deadline_minutes":0},
-    "solver_config": {"time_limit_seconds": ${TIME_LIMIT_SECONDS}},
-    "penalty_parameters": {"alpha":1.0,"beta":1.0,"penalty_mode":"none","preference_scale_m":500},
-    "baseline_parameters": {"private_car_fuel_l_per_100km":11.1,"private_car_co2_kg_per_liter":2.35,"private_car_speed_kmph":80.0}
-}
-JSEOF
-        echo "  none_x0.90.json"
+base_config = Path(sys.argv[1])
+configs_dir = Path(sys.argv[2])
+time_limit = int(sys.argv[3])
+labels = sys.argv[4:]
 
-# none x1.00 (224-seat balanced baseline)
-cat > "$CONFIGS_DIR/none_x1.00.json" << JSEOF
-{
-    "experiment_name": "penalty_fleet_none_x1.00",
-    "fleet": {"vehicle_types": [
-            {"name":"Scooter","capacity":1,"max_speed_kmph":25,"fuel_l_per_100km":2.0,"co2_kg_per_liter":2.35,"fleet_size":56,"distance_band":{"lower_km":0.0,"upper_km":2.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Moped","capacity":2,"max_speed_kmph":45,"fuel_l_per_100km":3.0,"co2_kg_per_liter":2.35,"fleet_size":28,"distance_band":{"lower_km":1.5,"upper_km":6.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Car","capacity":4,"max_speed_kmph":80,"fuel_l_per_100km":11.1,"co2_kg_per_liter":2.35,"fleet_size":14,"distance_band":{"lower_km":4.0,"upper_km":12.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Minibus","capacity":8,"max_speed_kmph":70,"fuel_l_per_100km":14.0,"co2_kg_per_liter":2.68,"fleet_size":7,"distance_band":{"lower_km":8.0,"upper_km":20.0},"fixed_cost_km_equiv":0.0}
-    ]},
-    "time_window": {"mode":"fixed_slots","interval_minutes":20,"start_time_minutes":420,"end_time_minutes":570,"buffer_before_deadline_minutes":0},
-    "solver_config": {"time_limit_seconds": ${TIME_LIMIT_SECONDS}},
-    "penalty_parameters": {"alpha":1.0,"beta":1.0,"penalty_mode":"none","preference_scale_m":500},
-    "baseline_parameters": {"private_car_fuel_l_per_100km":11.1,"private_car_co2_kg_per_liter":2.35,"private_car_speed_kmph":80.0}
+fleet_sizes = {
+    "x0.90": {"Scooter": 50, "Moped": 25, "Car": 13, "Minibus": 6},
+    "x1.00": {"Scooter": 56, "Moped": 28, "Car": 14, "Minibus": 7},
+    "x1.10": {"Scooter": 61, "Moped": 31, "Car": 15, "Minibus": 8},
+    "x1.25": {"Scooter": 70, "Moped": 35, "Car": 17, "Minibus": 9},
 }
-JSEOF
-        echo "  none_x1.00.json"
 
-# none x1.10 (247 seats)
-cat > "$CONFIGS_DIR/none_x1.10.json" << JSEOF
-{
-    "experiment_name": "penalty_fleet_none_x1.10",
-    "fleet": {"vehicle_types": [
-            {"name":"Scooter","capacity":1,"max_speed_kmph":25,"fuel_l_per_100km":2.0,"co2_kg_per_liter":2.35,"fleet_size":61,"distance_band":{"lower_km":0.0,"upper_km":2.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Moped","capacity":2,"max_speed_kmph":45,"fuel_l_per_100km":3.0,"co2_kg_per_liter":2.35,"fleet_size":31,"distance_band":{"lower_km":1.5,"upper_km":6.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Car","capacity":4,"max_speed_kmph":80,"fuel_l_per_100km":11.1,"co2_kg_per_liter":2.35,"fleet_size":15,"distance_band":{"lower_km":4.0,"upper_km":12.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Minibus","capacity":8,"max_speed_kmph":70,"fuel_l_per_100km":14.0,"co2_kg_per_liter":2.68,"fleet_size":8,"distance_band":{"lower_km":8.0,"upper_km":20.0},"fixed_cost_km_equiv":0.0}
-    ]},
-    "time_window": {"mode":"fixed_slots","interval_minutes":20,"start_time_minutes":420,"end_time_minutes":570,"buffer_before_deadline_minutes":0},
-    "solver_config": {"time_limit_seconds": ${TIME_LIMIT_SECONDS}},
-    "penalty_parameters": {"alpha":1.0,"beta":1.0,"penalty_mode":"none","preference_scale_m":500},
-    "baseline_parameters": {"private_car_fuel_l_per_100km":11.1,"private_car_co2_kg_per_liter":2.35,"private_car_speed_kmph":80.0}
-}
-JSEOF
-        echo "  none_x1.10.json"
+base = json.loads(base_config.read_text())
+for label in labels:
+    mode, scale = label.rsplit("_", 1)
+    if mode not in {"none", "multiplicative"}:
+        raise SystemExit(f"ERROR: Unknown penalty mode in {label!r}")
+    if scale not in fleet_sizes:
+        raise SystemExit(f"ERROR: Unknown fleet scale in {label!r}")
 
-# none x1.25 (280 seats)
-cat > "$CONFIGS_DIR/none_x1.25.json" << JSEOF
-{
-    "experiment_name": "penalty_fleet_none_x1.25",
-    "fleet": {"vehicle_types": [
-            {"name":"Scooter","capacity":1,"max_speed_kmph":25,"fuel_l_per_100km":2.0,"co2_kg_per_liter":2.35,"fleet_size":70,"distance_band":{"lower_km":0.0,"upper_km":2.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Moped","capacity":2,"max_speed_kmph":45,"fuel_l_per_100km":3.0,"co2_kg_per_liter":2.35,"fleet_size":35,"distance_band":{"lower_km":1.5,"upper_km":6.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Car","capacity":4,"max_speed_kmph":80,"fuel_l_per_100km":11.1,"co2_kg_per_liter":2.35,"fleet_size":17,"distance_band":{"lower_km":4.0,"upper_km":12.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Minibus","capacity":8,"max_speed_kmph":70,"fuel_l_per_100km":14.0,"co2_kg_per_liter":2.68,"fleet_size":9,"distance_band":{"lower_km":8.0,"upper_km":20.0},"fixed_cost_km_equiv":0.0}
-    ]},
-    "time_window": {"mode":"fixed_slots","interval_minutes":20,"start_time_minutes":420,"end_time_minutes":570,"buffer_before_deadline_minutes":0},
-    "solver_config": {"time_limit_seconds": ${TIME_LIMIT_SECONDS}},
-    "penalty_parameters": {"alpha":1.0,"beta":1.0,"penalty_mode":"none","preference_scale_m":500},
-    "baseline_parameters": {"private_car_fuel_l_per_100km":11.1,"private_car_co2_kg_per_liter":2.35,"private_car_speed_kmph":80.0}
-}
-JSEOF
-        echo "  none_x1.25.json"
-cat > "$CONFIGS_DIR/multiplicative_x0.90.json" << JSEOF
-{
-    "experiment_name": "penalty_fleet_multiplicative_x0.90",
-    "fleet": {"vehicle_types": [
-            {"name":"Scooter","capacity":1,"max_speed_kmph":25,"fuel_l_per_100km":2.0,"co2_kg_per_liter":2.35,"fleet_size":50,"distance_band":{"lower_km":0.0,"upper_km":2.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Moped","capacity":2,"max_speed_kmph":45,"fuel_l_per_100km":3.0,"co2_kg_per_liter":2.35,"fleet_size":25,"distance_band":{"lower_km":1.5,"upper_km":6.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Car","capacity":4,"max_speed_kmph":80,"fuel_l_per_100km":11.1,"co2_kg_per_liter":2.35,"fleet_size":13,"distance_band":{"lower_km":4.0,"upper_km":12.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Minibus","capacity":8,"max_speed_kmph":70,"fuel_l_per_100km":14.0,"co2_kg_per_liter":2.68,"fleet_size":6,"distance_band":{"lower_km":8.0,"upper_km":20.0},"fixed_cost_km_equiv":0.0}
-    ]},
-    "time_window": {"mode":"fixed_slots","interval_minutes":20,"start_time_minutes":420,"end_time_minutes":570,"buffer_before_deadline_minutes":0},
-    "solver_config": {"time_limit_seconds": ${TIME_LIMIT_SECONDS}},
-    "penalty_parameters": {"alpha":1.0,"beta":1.0,"penalty_mode":"multiplicative","preference_scale_m":500},
-    "baseline_parameters": {"private_car_fuel_l_per_100km":11.1,"private_car_co2_kg_per_liter":2.35,"private_car_speed_kmph":80.0}
-}
-JSEOF
-        echo "  multiplicative_x0.90.json"
+    config = copy.deepcopy(base)
+    config["experiment_name"] = f"penalty_fleet_{mode}_{scale}"
+    config.setdefault("solver_config", {})["time_limit_seconds"] = time_limit
+    config.setdefault("penalty_parameters", {})["penalty_mode"] = mode
 
-cat > "$CONFIGS_DIR/multiplicative_x1.00.json" << JSEOF
-{
-    "experiment_name": "penalty_fleet_multiplicative_x1.00",
-    "fleet": {"vehicle_types": [
-            {"name":"Scooter","capacity":1,"max_speed_kmph":25,"fuel_l_per_100km":2.0,"co2_kg_per_liter":2.35,"fleet_size":56,"distance_band":{"lower_km":0.0,"upper_km":2.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Moped","capacity":2,"max_speed_kmph":45,"fuel_l_per_100km":3.0,"co2_kg_per_liter":2.35,"fleet_size":28,"distance_band":{"lower_km":1.5,"upper_km":6.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Car","capacity":4,"max_speed_kmph":80,"fuel_l_per_100km":11.1,"co2_kg_per_liter":2.35,"fleet_size":14,"distance_band":{"lower_km":4.0,"upper_km":12.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Minibus","capacity":8,"max_speed_kmph":70,"fuel_l_per_100km":14.0,"co2_kg_per_liter":2.68,"fleet_size":7,"distance_band":{"lower_km":8.0,"upper_km":20.0},"fixed_cost_km_equiv":0.0}
-    ]},
-    "time_window": {"mode":"fixed_slots","interval_minutes":20,"start_time_minutes":420,"end_time_minutes":570,"buffer_before_deadline_minutes":0},
-    "solver_config": {"time_limit_seconds": ${TIME_LIMIT_SECONDS}},
-    "penalty_parameters": {"alpha":1.0,"beta":1.0,"penalty_mode":"multiplicative","preference_scale_m":500},
-    "baseline_parameters": {"private_car_fuel_l_per_100km":11.1,"private_car_co2_kg_per_liter":2.35,"private_car_speed_kmph":80.0}
-}
-JSEOF
-        echo "  multiplicative_x1.00.json"
+    sizes = fleet_sizes[scale]
+    for vehicle in config.get("fleet", {}).get("vehicle_types", []):
+        name = vehicle.get("name")
+        if name not in sizes:
+            raise SystemExit(f"ERROR: Unexpected vehicle type {name!r}")
+        vehicle["fleet_size"] = sizes[name]
 
-cat > "$CONFIGS_DIR/multiplicative_x1.10.json" << JSEOF
-{
-    "experiment_name": "penalty_fleet_multiplicative_x1.10",
-    "fleet": {"vehicle_types": [
-            {"name":"Scooter","capacity":1,"max_speed_kmph":25,"fuel_l_per_100km":2.0,"co2_kg_per_liter":2.35,"fleet_size":61,"distance_band":{"lower_km":0.0,"upper_km":2.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Moped","capacity":2,"max_speed_kmph":45,"fuel_l_per_100km":3.0,"co2_kg_per_liter":2.35,"fleet_size":31,"distance_band":{"lower_km":1.5,"upper_km":6.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Car","capacity":4,"max_speed_kmph":80,"fuel_l_per_100km":11.1,"co2_kg_per_liter":2.35,"fleet_size":15,"distance_band":{"lower_km":4.0,"upper_km":12.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Minibus","capacity":8,"max_speed_kmph":70,"fuel_l_per_100km":14.0,"co2_kg_per_liter":2.68,"fleet_size":8,"distance_band":{"lower_km":8.0,"upper_km":20.0},"fixed_cost_km_equiv":0.0}
-    ]},
-    "time_window": {"mode":"fixed_slots","interval_minutes":20,"start_time_minutes":420,"end_time_minutes":570,"buffer_before_deadline_minutes":0},
-    "solver_config": {"time_limit_seconds": ${TIME_LIMIT_SECONDS}},
-    "penalty_parameters": {"alpha":1.0,"beta":1.0,"penalty_mode":"multiplicative","preference_scale_m":500},
-    "baseline_parameters": {"private_car_fuel_l_per_100km":11.1,"private_car_co2_kg_per_liter":2.35,"private_car_speed_kmph":80.0}
-}
-JSEOF
-        echo "  multiplicative_x1.10.json"
+    out = configs_dir / f"{label}.json"
+    out.write_text(json.dumps(config, indent=2) + "\n")
+    print(f"  {out.name}")
+PYEOF
 
-cat > "$CONFIGS_DIR/multiplicative_x1.25.json" << JSEOF
-{
-    "experiment_name": "penalty_fleet_multiplicative_x1.25",
-    "fleet": {"vehicle_types": [
-            {"name":"Scooter","capacity":1,"max_speed_kmph":25,"fuel_l_per_100km":2.0,"co2_kg_per_liter":2.35,"fleet_size":70,"distance_band":{"lower_km":0.0,"upper_km":2.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Moped","capacity":2,"max_speed_kmph":45,"fuel_l_per_100km":3.0,"co2_kg_per_liter":2.35,"fleet_size":35,"distance_band":{"lower_km":1.5,"upper_km":6.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Car","capacity":4,"max_speed_kmph":80,"fuel_l_per_100km":11.1,"co2_kg_per_liter":2.35,"fleet_size":17,"distance_band":{"lower_km":4.0,"upper_km":12.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Minibus","capacity":8,"max_speed_kmph":70,"fuel_l_per_100km":14.0,"co2_kg_per_liter":2.68,"fleet_size":9,"distance_band":{"lower_km":8.0,"upper_km":20.0},"fixed_cost_km_equiv":0.0}
-    ]},
-    "time_window": {"mode":"fixed_slots","interval_minutes":20,"start_time_minutes":420,"end_time_minutes":570,"buffer_before_deadline_minutes":0},
-    "solver_config": {"time_limit_seconds": ${TIME_LIMIT_SECONDS}},
-    "penalty_parameters": {"alpha":1.0,"beta":1.0,"penalty_mode":"multiplicative","preference_scale_m":500},
-    "baseline_parameters": {"private_car_fuel_l_per_100km":11.1,"private_car_co2_kg_per_liter":2.35,"private_car_speed_kmph":80.0}
-}
-JSEOF
-        echo "  multiplicative_x1.25.json"
-export CONFIGS_DIR RESULTS_DIR PYVRP_SCRIPT COMMUTERS_CSV STATIONS_CSV MATRICES_DIR
+[[ $DRY_RUN == 1 ]] && { echo "  DRY RUN"; cat "$JOB_FILE"; exit 0; }
+
+export CONFIGS_DIR RESULTS_DIR PYVRP_SCRIPT COMMUTERS_CSV STATIONS_CSV MATRICES_DIR PYTHON_BIN
 
 PROG_COUNT=$(mktemp /tmp/pyvrp_prog.XXXXXX)
 PROG_LOCK=$(mktemp /tmp/pyvrp_lock.XXXXXX)
@@ -237,7 +148,7 @@ run_one() {
     mkdir -p "$out_dir"
     cp "$CONFIGS_DIR/${label}.json" "$out_dir/config.json"
     printf "[%s seed_%s] starting...\n" "$label" "$seed"
-    if python3 "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$MATRICES_DIR" \
+    if "$PYTHON_BIN" "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$MATRICES_DIR" \
             "$out_dir/assignments.csv" "$out_dir/av_routes.csv" \
             "$CONFIGS_DIR/${label}.json" \
             "$out_dir/baseline.json" "$out_dir/metrics.json" "$out_dir/comparison.json" \

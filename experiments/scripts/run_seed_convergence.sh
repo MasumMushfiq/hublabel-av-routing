@@ -5,6 +5,7 @@ TOTAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4
 PARALLEL_JOBS=${PARALLEL_JOBS:-$(( TOTAL_CORES > 2 ? TOTAL_CORES - 2 : 1 ))}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 PYVRP_SCRIPT="$ROOT/python/simulate_first_mile_pyvrp.py"
 # Input overrides:
 #   COMMUTERS_CSV default: $ROOT/files/inputs/commuters.csv
@@ -13,14 +14,19 @@ PYVRP_SCRIPT="$ROOT/python/simulate_first_mile_pyvrp.py"
 COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters.csv}"
 STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
 MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
+BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/base_config.json}"
 DRY_RUN=${DRY_RUN:-0}
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
 EXPERIMENT=${EXPERIMENT:-seed_convergence_224seats}
-RESULTS_DIR="$ROOT/experiments/results/$EXPERIMENT"
+OUTPUT_ROOT="${OUTPUT_DIR:-$ROOT/experiments/results}"
+if [[ "$OUTPUT_ROOT" != /* ]]; then
+    OUTPUT_ROOT="$ROOT/$OUTPUT_ROOT"
+fi
+RESULTS_DIR="$OUTPUT_ROOT/$EXPERIMENT"
 CONFIGS_DIR="$RESULTS_DIR/configs"
 N_SEEDS=${N_SEEDS:-50}
-TIME_LIMIT_SECONDS=${TIME_LIMIT_SECONDS:-180}
+TIME_LIMIT_SECONDS=${TIME_LIMIT_SECONDS:-300}
 
 JOB_FILE=$(mktemp /tmp/pyvrp_sc_jobs.XXXXXX)
 trap "rm -f $JOB_FILE" EXIT
@@ -32,35 +38,36 @@ echo "╔═══════════════════════�
 echo "║        PyVRP SEED CONVERGENCE ANALYSIS                         ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo "  Fleet    : 56S/28M/14C/7MB (224 seats, balanced 25/25/25/25 seat share)"
-echo "  Demand   : 1465 Myki commuters  |  Time: ${TIME_LIMIT_SECONDS}s  |  Distance-band penalty: none"
+echo "  Demand   : $COMMUTERS_CSV  |  Time: ${TIME_LIMIT_SECONDS}s  |  Distance-band penalty: none"
 echo "  Experiment folder: $EXPERIMENT"
 echo "  Seeds    : 1 – $N_SEEDS  |  Total: $TOTAL jobs  |  Parallel: $PARALLEL_JOBS workers"
-[[ $DRY_RUN == 1 ]] && { echo "  DRY RUN"; cat "$JOB_FILE"; exit 0; }
 
-for f in "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV"; do
+for f in "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$BASE_CONFIG"; do
     [[ -f "$f" ]] || { echo "ERROR: Missing file: $f"; exit 1; }
 done
 [[ -d "$MATRICES_DIR" ]] || { echo "ERROR: Missing matrices dir: $MATRICES_DIR"; exit 1; }
 
 rm -rf "$CONFIGS_DIR"
 mkdir -p "$CONFIGS_DIR"
-cat > "$CONFIGS_DIR/seed_convergence.json" << JSEOF
-{
-  "experiment_name": "seed_convergence${TIME_LIMIT_SECONDS}s",
-  "fleet": {"vehicle_types": [
-            {"name":"Scooter","capacity":1,"max_speed_kmph":25,"fuel_l_per_100km":2.0,"co2_kg_per_liter":2.35,"fleet_size":56,"distance_band":{"lower_km":0.0,"upper_km":2.0},"fixed_cost_km_equiv":0.0},
-      {"name":"Moped","capacity":2,"max_speed_kmph":45,"fuel_l_per_100km":3.0,"co2_kg_per_liter":2.35,"fleet_size":28,"distance_band":{"lower_km":1.5,"upper_km":6.0},"fixed_cost_km_equiv":0.0},
-            {"name":"Car","capacity":4,"max_speed_kmph":80,"fuel_l_per_100km":11.1,"co2_kg_per_liter":2.35,"fleet_size":14,"distance_band":{"lower_km":4.0,"upper_km":12.0},"fixed_cost_km_equiv":0.0},
-      {"name":"Minibus","capacity":8,"max_speed_kmph":70,"fuel_l_per_100km":14.0,"co2_kg_per_liter":2.68,"fleet_size":7,"distance_band":{"lower_km":8.0,"upper_km":20.0},"fixed_cost_km_equiv":0.0}
-  ]},
-  "time_window": {"mode":"fixed_slots","interval_minutes":20,"start_time_minutes":420,"end_time_minutes":570,"buffer_before_deadline_minutes":0},
-  "solver_config": {"time_limit_seconds": ${TIME_LIMIT_SECONDS}},
-  "penalty_parameters": {"alpha":1.0,"beta":1.0,"penalty_mode":"none","preference_scale_m":500},
-  "baseline_parameters": {"private_car_fuel_l_per_100km":11.1,"private_car_co2_kg_per_liter":2.35,"private_car_speed_kmph":80.0}
-}
-JSEOF
+"$PYTHON_BIN" - "$BASE_CONFIG" "$CONFIGS_DIR/seed_convergence.json" "$TIME_LIMIT_SECONDS" << 'PYEOF'
+import copy
+import json
+import sys
+from pathlib import Path
+
+base_config = Path(sys.argv[1])
+out_path = Path(sys.argv[2])
+time_limit = int(sys.argv[3])
+
+config = copy.deepcopy(json.loads(base_config.read_text()))
+config.setdefault("solver_config", {})["time_limit_seconds"] = time_limit
+config["experiment_name"] = f"seed_convergence{time_limit}s"
+out_path.write_text(json.dumps(config, indent=2) + "\n")
+PYEOF
 echo "  seed_convergence.json written"
-export CONFIGS_DIR RESULTS_DIR PYVRP_SCRIPT COMMUTERS_CSV STATIONS_CSV MATRICES_DIR
+
+[[ $DRY_RUN == 1 ]] && { echo "  DRY RUN"; cat "$JOB_FILE"; exit 0; }
+export CONFIGS_DIR RESULTS_DIR PYVRP_SCRIPT COMMUTERS_CSV STATIONS_CSV MATRICES_DIR PYTHON_BIN
 
 PROG_COUNT=$(mktemp /tmp/pyvrp_prog.XXXXXX)
 PROG_LOCK=$(mktemp /tmp/pyvrp_lock.XXXXXX)
@@ -91,7 +98,7 @@ run_one() {
     mkdir -p "$out_dir"
     cp "$CONFIGS_DIR/seed_convergence.json" "$out_dir/config.json"
     printf "[seed_%s] starting...\n" "$seed"
-    if python3 "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$MATRICES_DIR" \
+    if "$PYTHON_BIN" "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$MATRICES_DIR" \
             "$out_dir/assignments.csv" "$out_dir/av_routes.csv" \
             "$CONFIGS_DIR/seed_convergence.json" \
             "$out_dir/baseline.json" "$out_dir/metrics.json" "$out_dir/comparison.json" \

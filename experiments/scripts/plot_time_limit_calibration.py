@@ -35,26 +35,19 @@ X_LABELS    = ["10", "20", "30", "60", "120", "180", "240", "300", "450", "600"]
 
 def setup_pub_style():
     apply_pub_style()
-    return
 
-    plt.rcParams.clear()
-    plt.rcParams.update({
-        "font.family":       "serif",
-        "font.serif":        ["Times New Roman", "DejaVu Serif", "serif"],
-        "figure.dpi":        150,
-        "savefig.dpi":       300,
-        "axes.linewidth":    1.2,
-        "grid.alpha":        0.35,
-        "grid.linewidth":    0.8,
-        "font.size":         10,
-        "axes.labelsize":    11,
-        "axes.titlesize":    12,
-        "legend.fontsize":   9,
-        "xtick.labelsize":   8.5,
-        "ytick.labelsize":   9,
-        "pdf.fonttype":      42,
-        "ps.fonttype":       42,
-    })
+
+def system_reduction(change_pct, system_total, baseline_total, run_path, metric_label):
+    if change_pct is not None:
+        return float(change_pct), -float(change_pct)
+    if system_total is not None and baseline_total:
+        reduction = (float(baseline_total) - float(system_total)) / float(baseline_total) * 100
+        return -reduction, reduction
+    print(
+        f"  WARNING: missing system {metric_label} fields for {run_path}; "
+        "setting system reduction to NaN"
+    )
+    return float("nan"), float("nan")
 
 
 def minor_y(ax):
@@ -82,40 +75,78 @@ def aggregate(results_dir):
         for run_dir in sorted(os.listdir(cond_dir)):
             mpath = os.path.join(cond_dir, run_dir, "metrics.json")
             bpath = os.path.join(cond_dir, run_dir, "baseline.json")
+            cpath = os.path.join(cond_dir, run_dir, "comparison.json")
             if not os.path.isfile(mpath):
                 continue
             with open(mpath) as f:
                 m = json.load(f)
-            baseline_vmt = baseline_co2 = 0.0
+            c = {}
+            if os.path.isfile(cpath):
+                with open(cpath) as f:
+                    c = json.load(f)
+
+            baseline_vmt = baseline_energy = baseline_co2 = 0.0
             if os.path.isfile(bpath):
                 with open(bpath) as f:
                     b = json.load(f)
-                baseline_vmt = b.get("total_vmt_km", 0.0)
-                baseline_co2 = b.get("total_co2_kg", 0.0)
+                baseline_vmt = b.get("baseline_total_vmt_km", b.get("total_vmt_km", 0.0))
+                baseline_energy = b.get(
+                    "baseline_total_energy_kwh",
+                    b.get("total_energy_kwh", 0.0),
+                )
+                baseline_co2 = b.get("baseline_total_co2_kg", b.get("total_co2_kg", 0.0))
 
             served  = m.get("served_commuters", 0)
             total   = m.get("total_commuters", 1)
-            vmt     = m.get("total_vmt_km", 0.0)
-            co2     = m.get("total_co2_kg", 0.0)
             late    = m.get("late_deliveries", 0)
+            fallback_private_cars = c.get(
+                "fallback_private_cars",
+                m.get("fallback_private_cars", late + m.get("unserved_commuters", 0)),
+            )
             avg_pax = m.get("avg_passengers_per_trip", 0.0)
             v_used  = m.get("vehicles_used", 1)
             v_trips = m.get("vehicle_trips", 0)
 
-            service_rate = m.get("service_rate", served / total * 100 if total else 0.0)
-            effective_on_time = m.get(
-                "effective_on_time_service_rate",
-                max(0, served - late) / total * 100 if total else 0.0,
+            service_rate = c.get(
+                "service_rate_pct",
+                m.get("service_rate", served / total * 100 if total else 0.0),
             )
-            vmt_red = (baseline_vmt - vmt) / baseline_vmt * 100 if baseline_vmt else 0.0
-            co2_red = (baseline_co2 - co2) / baseline_co2 * 100 if baseline_co2 else 0.0
+            on_time_rate = c.get("on_time_rate_pct", m.get("on_time_rate", service_rate))
+            effective_on_time = service_rate
+
+            system_vmt = m.get("system_total_vmt_km")
+            system_energy = m.get("system_total_energy_kwh")
+            system_co2 = m.get("system_total_co2_kg")
+
+            system_vmt_change_pct = c.get("system_vmt_change_pct", m.get("system_vmt_change_pct"))
+            system_energy_change_pct = c.get(
+                "system_energy_change_pct",
+                m.get("system_energy_change_pct"),
+            )
+            system_co2_change_pct = c.get("system_co2_change_pct", m.get("system_co2_change_pct"))
+
+            system_vmt_change_pct, vmt_red = system_reduction(
+                system_vmt_change_pct, system_vmt, baseline_vmt, os.path.join(cond_dir, run_dir), "VMT"
+            )
+            system_energy_change_pct, energy_red = system_reduction(
+                system_energy_change_pct, system_energy, baseline_energy, os.path.join(cond_dir, run_dir), "energy"
+            )
+            system_co2_change_pct, co2_red = system_reduction(
+                system_co2_change_pct, system_co2, baseline_co2, os.path.join(cond_dir, run_dir), "CO2"
+            )
 
             run_metrics.append({
                 "service_rate":  service_rate,
+                "on_time_rate":  on_time_rate,
                 "effective_on_time_service_rate": effective_on_time,
+                "system_vmt_change_pct": system_vmt_change_pct,
+                "system_energy_change_pct": system_energy_change_pct,
+                "system_co2_change_pct": system_co2_change_pct,
                 "vmt_red":       vmt_red,
+                "energy_red":    energy_red,
                 "co2_red":       co2_red,
                 "late":          late,
+                "fallback_private_cars": fallback_private_cars,
                 "avg_pax":       avg_pax,
                 "vehicles_used": v_used,
                 "vehicle_trips": v_trips,
@@ -197,7 +228,7 @@ def fig_manuscript_compact(df, out_dir):
     
     Dual-axis plot showing:
     - Left y-axis: Service rate (%)
-    - Right y-axis: VMT and CO₂ reduction (%)
+    - Right y-axis: System VMT and CO₂ reduction (%)
     """
     COLORS = {
         "service": "#2196F3",
@@ -207,7 +238,8 @@ def fig_manuscript_compact(df, out_dir):
 
     fig, ax1 = plt.subplots(figsize=(5.5, 3.5))
     
-    x = df["time_limit_s"].to_numpy()
+    x = np.arange(len(df))
+    x_labels = [str(int(ti)) for ti in df["time_limit_s"].to_numpy()]
     
     # LEFT AXIS: Service rate
     service_mean = df["service_rate_mean"].to_numpy()
@@ -224,7 +256,7 @@ def fig_manuscript_compact(df, out_dir):
     ax1.tick_params(axis="y", labelcolor=COLORS["service"])
     ax1.set_ylim(max(0, min(service_mean) - 5), min(101, max(service_mean) + 1))
     ax1.set_xticks(x)
-    ax1.set_xticklabels([str(int(ti)) for ti in x], rotation=90, fontsize=9)
+    ax1.set_xticklabels(x_labels, fontsize=9)
     ax1.grid(axis="y", ls="--", alpha=0.3)
     ax1.grid(axis="x", ls=":", alpha=0.15)
     ax1.yaxis.set_minor_locator(AutoMinorLocator())
@@ -232,7 +264,7 @@ def fig_manuscript_compact(df, out_dir):
     # Add horizontal line at 100% for service rate
     ax1.axhline(100, color=COLORS["service"], ls="--", lw=0.8, alpha=0.3, zorder=1)
     
-    # RIGHT AXIS: VMT and CO₂ reduction
+    # RIGHT AXIS: System VMT and CO₂ reduction
     ax2 = ax1.twinx()
     
     vmt_mean = df["vmt_red_mean"].to_numpy()
@@ -242,18 +274,18 @@ def fig_manuscript_compact(df, out_dir):
     co2_std = df["co2_red_std"].fillna(0).to_numpy()
     
     line2 = ax2.plot(x, vmt_mean, marker="s", ms=4.0, lw=2.0,
-                     color=COLORS["vmt"], label="VMT reduction",
+                     color=COLORS["vmt"], label="System VMT reduction",
                      zorder=3)
     ax2.fill_between(x, vmt_mean - vmt_std, vmt_mean + vmt_std,
                      alpha=0.15, color=COLORS["vmt"], zorder=2)
-    
+
     line3 = ax2.plot(x, co2_mean, marker="^", ms=4.0, lw=2.0,
-                     color=COLORS["co2"], label="CO$_2$ reduction",
+                     color=COLORS["co2"], label="System CO$_2$ reduction",
                      zorder=3)
     ax2.fill_between(x, co2_mean - co2_std, co2_mean + co2_std,
                      alpha=0.15, color=COLORS["co2"], zorder=2)
-    
-    ax2.set_ylabel("VMT / CO$_2$ reduction (%)", fontsize=11)
+
+    ax2.set_ylabel("System reduction (%)", fontsize=11)
     ax2.yaxis.set_minor_locator(AutoMinorLocator())
     ax2.grid(axis="y", ls="--", alpha=0.1)
     
@@ -263,8 +295,8 @@ def fig_manuscript_compact(df, out_dir):
     # Combined legend
     lines = line1 + line2 + line3
     labels = [l.get_label() for l in lines]
-    ax1.legend(lines, labels, loc="lower right", fontsize=9,
-              framealpha=0.95, edgecolor="grey", fancybox=False)
+    ax1.legend(lines, labels, loc="lower right", fontsize=8,
+              framealpha=0.85, edgecolor="grey", fancybox=False)
     
     plt.tight_layout()
     
@@ -279,7 +311,7 @@ def fig_combined(df, out_dir):
     COLORS = {
         "service": "#2196F3",
         "vmt":     "#4CAF50",
-        "co2":     "#FF9800",
+        "energy":  "#7E57C2",
         "pax":     "#9C27B0",
     }
 
@@ -295,15 +327,15 @@ def fig_combined(df, out_dir):
 
     draw_panel(axes[1], df,
                "vmt_red_mean", "vmt_red_std",
-               "VMT reduction vs private (%)", "(b) VMT Reduction",
+               "System VMT reduction vs private (%)", "(b) System VMT Reduction",
                color=COLORS["vmt"],
                hline=0, tol=0.01)
 
     draw_panel(axes[2], df,
-               "co2_red_mean", "co2_red_std",
-               r"CO$_2$ reduction vs private (%)",
-               r"(c) CO$_2$ Reduction",
-               color=COLORS["co2"],
+               "energy_red_mean", "energy_red_std",
+               r"System energy reduction vs private (%)",
+               r"(c) System Energy Reduction",
+               color=COLORS["energy"],
                hline=0, tol=0.01)
 
     draw_panel(axes[3], df,
@@ -323,22 +355,23 @@ def fig_combined(df, out_dir):
 
 def print_summary(df):
     print(
-        f"\n  {'TL(s)':>6}  {'Runs':>4}  {'Served%':>8}  "
-        f"{'EffOT%':>8}  {'VMT red%':>9}  {'CO2 red%':>9}  "
-        f"{'Pax/trip':>8}  {'Late':>6}"
+        f"\n  {'TL(s)':>6}  {'Runs':>4}  {'Service%':>9}  "
+        f"{'Sys VMT%':>9}  {'Sys kWh%':>9}  {'kWh chg%':>9}  "
+        f"{'Sys CO2%':>9}  {'Pax/trip':>8}  {'Fallback':>8}"
     )
-    print(f"  {'-'*77}")
+    print(f"  {'-'*91}")
 
     for _, r in df.iterrows():
         print(
             f"  {int(r['time_limit_s']):>6}  "
             f"{int(r['n_runs']):>4}  "
-            f"{r['service_rate_mean']:>7.1f}%  "
-            f"{r['effective_on_time_service_rate_mean']:>7.1f}%  "
+            f"{r['service_rate_mean']:>8.1f}%  "
             f"{r['vmt_red_mean']:>8.1f}%  "
+            f"{r['energy_red_mean']:>8.1f}%  "
+            f"{r['system_energy_change_pct_mean']:>8.1f}%  "
             f"{r['co2_red_mean']:>8.1f}%  "
             f"{r['avg_pax_mean']:>8.2f}  "
-            f"{r['late_mean']:>6.1f}"
+            f"{r['fallback_private_cars_mean']:>8.1f}"
         )
 
     x = df["time_limit_s"].to_numpy()
@@ -346,9 +379,9 @@ def print_summary(df):
 
     for col, label in [
         ("service_rate_mean", "Service rate  "),
-        ("effective_on_time_service_rate_mean", "Eff. on-time  "),
-        ("vmt_red_mean", "VMT reduction "),
-        ("co2_red_mean", "CO2 reduction "),
+        ("vmt_red_mean", "System VMT reduction "),
+        ("energy_red_mean", "System energy reduction "),
+        ("co2_red_mean", "System CO2 reduction "),
         ("avg_pax_mean", "Avg pax/trip  "),
     ]:
         vals = df[col].to_numpy()

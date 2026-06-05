@@ -6,8 +6,8 @@ Aggregates and plots the penalty mode × fleet scale grid.
 
 Produces:
   fig_penalty_fleet_interaction.pdf/.png        — combined 3-panel figure
-  fig_penalty_fleet_effective_service.pdf/.png  — effective on-time service only
-  fig_penalty_fleet_vmt.pdf/.png                — VMT reduction only
+  fig_penalty_fleet_service_rate.pdf/.png       — service rate only
+  fig_penalty_fleet_vmt.pdf/.png                — system VMT reduction only
   fig_penalty_fleet_pooling.pdf/.png            — pooling efficiency only
   penalty_fleet_interaction_summary.csv
 
@@ -50,26 +50,19 @@ XLABS = [f"×{v:.2f}\n({SCALE_SEATS[s]} seats)" for v, s in zip(X_VALS, SCALES)]
 
 def setup_pub_style():
     apply_pub_style()
-    return
 
-    plt.rcParams.clear()
-    plt.rcParams.update({
-        "font.family":    "serif",
-        "font.serif":     ["Times New Roman", "DejaVu Serif", "serif"],
-        "figure.dpi":     150,
-        "savefig.dpi":    300,
-        "axes.linewidth": 1.2,
-        "grid.alpha":     0.3,
-        "grid.linewidth": 0.8,
-        "font.size":      10,
-        "axes.labelsize": 11,
-        "axes.titlesize": 12,
-        "legend.fontsize": 9,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "pdf.fonttype":   42,
-        "ps.fonttype":    42,
-    })
+
+def system_reduction(change_pct, system_total, baseline_total, run_path, metric_label):
+    if change_pct is not None:
+        return float(change_pct), -float(change_pct)
+    if system_total is not None and baseline_total:
+        reduction = (float(baseline_total) - float(system_total)) / float(baseline_total) * 100
+        return -reduction, reduction
+    print(
+        f"  WARNING: missing system {metric_label} fields for {run_path}; "
+        "setting system reduction to NaN"
+    )
+    return float("nan"), float("nan")
 
 
 def savefig(fig, base_path):
@@ -90,37 +83,75 @@ def load_cell(cond_dir):
     for run_dir in sorted(os.listdir(cond_dir)):
         mpath = os.path.join(cond_dir, run_dir, "metrics.json")
         bpath = os.path.join(cond_dir, run_dir, "baseline.json")
+        cpath = os.path.join(cond_dir, run_dir, "comparison.json")
         if not os.path.isfile(mpath):
             continue
         with open(mpath) as f:
             m = json.load(f)
-        baseline_vmt = baseline_co2 = 0.0
+        c = {}
+        if os.path.isfile(cpath):
+            with open(cpath) as f:
+                c = json.load(f)
+
+        baseline_vmt = baseline_energy = baseline_co2 = 0.0
         if os.path.isfile(bpath):
             with open(bpath) as f:
                 b = json.load(f)
-            baseline_vmt = b.get("total_vmt_km", 0.0)
-            baseline_co2 = b.get("total_co2_kg", 0.0)
+            baseline_vmt = b.get("baseline_total_vmt_km", b.get("total_vmt_km", 0.0))
+            baseline_energy = b.get(
+                "baseline_total_energy_kwh",
+                b.get("total_energy_kwh", 0.0),
+            )
+            baseline_co2 = b.get("baseline_total_co2_kg", b.get("total_co2_kg", 0.0))
 
         served  = m.get("served_commuters", 0)
         total   = m.get("total_commuters", 1)
-        vmt     = m.get("total_vmt_km", 0.0)
-        co2     = m.get("total_co2_kg", 0.0)
         late    = m.get("late_deliveries", 0)
         avg_pax = m.get("avg_passengers_per_trip", 0.0)
+        fallback_private_cars = c.get(
+            "fallback_private_cars",
+            m.get("fallback_private_cars", late + m.get("unserved_commuters", 0)),
+        )
 
-        vmt_red = (baseline_vmt - vmt) / baseline_vmt * 100 if baseline_vmt else 0.0
-        co2_red = (baseline_co2 - co2) / baseline_co2 * 100 if baseline_co2 else 0.0
+        service_rate = c.get(
+            "service_rate_pct",
+            m.get("service_rate", served / total * 100 if total else 0.0),
+        )
+        on_time_rate = c.get("on_time_rate_pct", m.get("on_time_rate", service_rate))
+        effective_service = service_rate
 
-        # Effective on-time service: prefer simulator field, else compute fallback
-        eff_ot = m.get("effective_on_time_service_rate")
-        if eff_ot is None:
-            eff_ot = max(0.0, (served - late) / max(1, total) * 100.0)
+        system_vmt = m.get("system_total_vmt_km")
+        system_energy = m.get("system_total_energy_kwh")
+        system_co2 = m.get("system_total_co2_kg")
+        system_vmt_change_pct = c.get("system_vmt_change_pct", m.get("system_vmt_change_pct"))
+        system_energy_change_pct = c.get(
+            "system_energy_change_pct",
+            m.get("system_energy_change_pct"),
+        )
+        system_co2_change_pct = c.get("system_co2_change_pct", m.get("system_co2_change_pct"))
+
+        run_path = os.path.join(cond_dir, run_dir)
+        system_vmt_change_pct, vmt_red = system_reduction(
+            system_vmt_change_pct, system_vmt, baseline_vmt, run_path, "VMT"
+        )
+        system_energy_change_pct, energy_red = system_reduction(
+            system_energy_change_pct, system_energy, baseline_energy, run_path, "energy"
+        )
+        system_co2_change_pct, co2_red = system_reduction(
+            system_co2_change_pct, system_co2, baseline_co2, run_path, "CO2"
+        )
 
         run_metrics.append({
-            "service_rate": served / total * 100,
-            "effective_on_time_service_rate": eff_ot,
+            "service_rate": service_rate,
+            "on_time_rate": on_time_rate,
+            "effective_on_time_service_rate": effective_service,
             "late":         late,
+            "fallback_private_cars": fallback_private_cars,
+            "system_vmt_change_pct": system_vmt_change_pct,
+            "system_energy_change_pct": system_energy_change_pct,
+            "system_co2_change_pct": system_co2_change_pct,
             "vmt_red":      vmt_red,
+            "energy_red":   energy_red,
             "co2_red":      co2_red,
             "avg_pax":      avg_pax,
         })
@@ -154,10 +185,10 @@ def aggregate(results_dir):
             data["vehicles"] = SCALE_VEHS[scale]
             rows.append(data)
             print(f"  {label:<25}: {data['n_runs']:>2} runs  "
-                  f"served={data['service_rate_mean']:.1f}%  "
-                  f"effectiveOT={data.get('effective_on_time_service_rate_mean', 0.0):.1f}%  "
-                  f"late={data['late_mean']:.1f}  "
-                  f"vmt_red={data['vmt_red_mean']:.1f}%  "
+                  f"service={data['service_rate_mean']:.1f}%  "
+                  f"fallback={data['fallback_private_cars_mean']:.1f}  "
+                  f"system_vmt_red={data['vmt_red_mean']:.1f}%  "
+                  f"system_co2_red={data['co2_red_mean']:.1f}%  "
                   f"pax/trip={data['avg_pax_mean']:.2f}")
     return pd.DataFrame(rows)
 
@@ -210,9 +241,9 @@ SUPTITLE = (
 )
 
 PANELS = [
-    ("effective_on_time_service_rate_mean", "effective_on_time_service_rate_std", "Effective on-time service (%)", "(a) Effective service"),
-    ("vmt_red_mean", "vmt_red_std", "VMT reduction vs private (%)", "(b) VMT reduction"),
-    ("avg_pax_mean", "avg_pax_std", "Avg passengers per trip", "(c) Avg pax / trip"),
+    ("service_rate_mean", "service_rate_std", "Service rate (%)", "(a) Service rate"),
+    ("vmt_red_mean", "vmt_red_std", "System VMT reduction vs private (%)", "(b) System VMT reduction"),
+    ("co2_red_mean", "co2_red_std", r"System CO$_2$ reduction vs private (%)", r"(c) System CO$_2$ reduction"),
 ]
 
 
@@ -232,11 +263,11 @@ def fig_combined(df, out_dir):
 # ── Individual panel figures ──────────────────────────────────────────────────
 
 INDIVIDUAL = [
-    ("effective_on_time_service_rate_mean", "effective_on_time_service_rate_std", "Effective on-time service (%)",
-     "Effective on-time service — Penalty Ablation (224-seat baseline)",
-     "fig_penalty_fleet_effective_service"),
-    ("vmt_red_mean", "vmt_red_std", "VMT reduction vs private (%)",
-     "VMT reduction — Penalty Ablation (224-seat baseline)",
+    ("service_rate_mean", "service_rate_std", "Service rate (%)",
+     "Service rate — Penalty Ablation (224-seat baseline)",
+     "fig_penalty_fleet_service_rate"),
+    ("vmt_red_mean", "vmt_red_std", "System VMT reduction vs private (%)",
+     "System VMT reduction — Penalty Ablation (224-seat baseline)",
      "fig_penalty_fleet_vmt"),
     ("avg_pax_mean", "avg_pax_std", "Avg passengers per trip",
      "Avg passengers per trip — Penalty Ablation (224-seat baseline)",
@@ -255,8 +286,8 @@ def fig_individual(df, out_dir):
 # ── Console summary ───────────────────────────────────────────────────────────
 
 def print_summary(df):
-    print(f"\n  {'Condition':<25}  {'Runs':>4}  {'Served%':>7}  {'EffOT%':>7}  {'Late':>6}  {'VMT red%':>9}  {'CO2 red%':>9}  {'Pax/trip':>8}")
-    print(f"  {'-'*100}")
+    print(f"\n  {'Condition':<25}  {'Runs':>4}  {'Service%':>9}  {'Fallback':>8}  {'Sys VMT%':>9}  {'Sys kWh%':>9}  {'Sys CO2%':>9}  {'Pax/trip':>8}")
+    print(f"  {'-'*112}")
     for mode in MODES:
         for scale in SCALES:
             r = df[(df["mode"] == mode) & (df["scale"] == scale)]
@@ -268,15 +299,13 @@ def print_summary(df):
             tag = "  ← reference" if scale == "x1.00" else ""
             print(f"  {name:<25}  "
                   f"{int(r['n_runs']):>4}  "
-                  f"{r['service_rate_mean']:>7.1f}%  "
-                  f"{r.get('effective_on_time_service_rate_mean', 0.0):>7.1f}%  "
-                  f"{r['late_mean']:>6.1f}  "
+                  f"{r['service_rate_mean']:>8.1f}%  "
+                  f"{r['fallback_private_cars_mean']:>8.1f}  "
                   f"{r['vmt_red_mean']:>8.1f}%  "
+                  f"{r['energy_red_mean']:>8.1f}%  "
                   f"{r['co2_red_mean']:>8.1f}%  "
                   f"{r['avg_pax_mean']:>8.2f}"
                   f"{tag}")
-            if r['service_rate_mean'] < FULL_SERVICE_THRESHOLD:
-                print(f"    WARNING: {name} has partial service (<{FULL_SERVICE_THRESHOLD}%). VMT/CO2 reductions not directly comparable.")
         print()
 
 
