@@ -6,7 +6,7 @@
 **Primary implementation:** PyVRP-based first-mile autonomous feeder simulation  
 **Main case study:** Melton Station, Melbourne  
 **Active model:** all-electric vehicles  
-**Last major model update:** all-electric energy, emissions, and cost evaluation
+**Last major model update:** refined all-electric energy, emissions, cost, and parking evaluation
 
 This document is the single source of truth for the current simulation pipeline, metric definitions, modeling assumptions, and validation rules. Any future implementation that changes the pipeline, metric semantics, configuration schema, experiment defaults, or output fields should update this specification in the same commit.
 
@@ -19,6 +19,18 @@ This project evaluates heterogeneous autonomous vehicle (AV) fleets for first-mi
 The main research focus is to compare fleet designs under consistent demand and network conditions. Fleet designs are evaluated using service, travel distance, energy use, emissions, parking demand, and AV fleet operating cost.
 
 The current implementation is not a full traffic simulation. It is a routing and evaluation pipeline using PyVRP/HGS over a road-network distance and duration matrix.
+
+The refined all-electric energy, emissions, cost, and parking evaluation model is now active. Cost and parking are evaluation-only layers and do not affect routing.
+
+---
+
+## Why autonomous fleets?
+
+This study assumes autonomous fleets because first-mile feeder service requires coordinated routing, dispatch, and repositioning around train-aligned demand. Driver-based ride-hailing or taxi systems cannot be directly controlled by a public agency; drivers can only be incentivized to move to certain areas.
+
+AV fleets can be centrally managed to match train-aligned demand and to serve low-density or underserved areas when required. Removing human drivers also removes driver-labor constraints and may reduce future operating costs, but cost remains evaluation-only in this project and does not affect routing.
+
+Autonomous scooters, bikes, and mopeds are conceptually different from current shared micromobility because they can be dispatched to the commuter origin and repositioned after use. They do not require users to walk to a dock or stand before pickup, and they do not require users to park the vehicle manually near the station.
 
 ---
 
@@ -704,18 +716,21 @@ Cost assumptions are documented in:
 docs/cost_assumptions_reference.md
 ```
 
-Current base cost assumptions:
+Current base evaluation-cost assumptions:
 
 | Vehicle type | Fixed cost | Maintenance cost |
 |---|---:|---:|
-| Scooter | 8.0 | 0.05/km |
-| Moped | 15.0 | 0.08/km |
-| Car | 40.0 | 0.18/km |
-| Minibus | 80.0 | 0.25/km |
+| Scooter | 1.98 AUD/vehicle/day | 0.06 AUD/km |
+| Moped | 4.02 AUD/vehicle/day | 0.04 AUD/km |
+| Car | 39.96 AUD/vehicle/day | 0.04 AUD/km |
+| Minibus | 42.59 AUD/vehicle/day | 0.25 AUD/km |
 
-To confirm before paper finalization:
+Interpretation:
 
-> The current monetary values are placeholders for comparative evaluation and should be refined or justified before final submission.
+- These values are indicative evaluation inputs for relative fleet comparison.
+- Costs are computed after routing and pruning; they are not part of route construction or the solver objective.
+- The model excludes autonomy-stack premium, driver labour, depot/charging infrastructure, insurance, and remote supervision.
+- Results should be interpreted as relative/indicative cost indicators, not as a full deployment business case.
 
 Definitions:
 
@@ -738,8 +753,9 @@ Important:
 - AV fleet cost excludes fallback private-car energy/cost.
 - Fallback private-car energy cost may be stored in metrics but is not part of `av_total_operating_cost`.
 - Fixed cost uses configured fleet size, not used vehicles.
-- Real AUD fixed and maintenance costs belong in `cost_model.fixed_cost_per_vehicle` and `cost_model.maintenance_cost_per_km`.
-- Do not put real AUD costs into `fleet.vehicle_types[].fixed_cost_km_equiv`; that field affects the solver objective.
+- `cost_model.fixed_cost_per_vehicle` and `cost_model.maintenance_cost_per_km` are AUD evaluation fields.
+- `fleet.vehicle_types[].fixed_cost_km_equiv` is a solver-objective field and must not receive real AUD costs.
+- Do not put real AUD costs into `fleet.vehicle_types[].fixed_cost_km_equiv`; that would affect the solver objective and violate the evaluation-only cost assumption.
 
 Cost outputs include:
 
@@ -754,6 +770,77 @@ av_cost_per_passenger_km
 av_cost_per_vehicle_km
 av_cost_by_vehicle_type
 ```
+
+---
+
+## Results Metric Hierarchy and Presentation Plan
+
+Primary paper metrics:
+
+- service rate;
+- system VMT reduction;
+- system energy reduction;
+- system CO2 reduction;
+- fallback private cars where useful for unmet-service interpretation.
+
+Secondary metrics:
+
+- served commuters;
+- AV operating cost per commuter or per served commuter;
+- parking reduction / net parking reduction;
+- pooling or vehicle-type assignment metrics only when explaining mechanisms.
+
+Diagnostic-only metrics:
+
+- late deliveries;
+- unserved commuters separately, unless explaining fallback accounting;
+- empty VMT ratio;
+- detailed cost subcomponents;
+- detailed parking subcomponents;
+- AV-only VMT/energy/CO2 reductions when system metrics exist.
+
+### Passenger Experience, Cost, and Parking Presentation
+
+Average in-vehicle time is a secondary passenger-experience metric. It is most useful in the representative fleet comparison to check whether system VMT savings come with longer passenger travel times. Do not use in-vehicle time as a primary metric in every experiment.
+
+Cost is evaluation-only and does not affect routing. Cost should be preserved in summary CSVs where available. The paper may report one compact cost metric, preferably AV operating cost per served commuter or AV operating cost per commuter. Detailed cost components should remain diagnostic.
+
+Parking is evaluation-only and should be preserved in summary CSVs where available. The safest paper-facing parking metric is station commuter parking reduction. Net parking reduction if the fleet is stored at the station can be reported only as illustrative because it depends on fleet-storage assumptions.
+
+Suggested placement:
+
+- Fleet grid: no cost, parking, or in-vehicle time in the main figure.
+- Representative comparison: include in-vehicle time and optionally one cost and one parking metric.
+- Vehicle-type contribution: focus on served share, VMT share, and distance assignment.
+- Capacity sensitivity: focus on service, fallback private cars, VMT, and CO2.
+- Pilot demand sensitivity: focus on service, fallback private cars, supported commuters, and VMT/CO2; cost only if useful.
+
+Current experiment presentation plan:
+
+1. Fleet-composition grid:
+   - main figure: system VMT reduction vs system CO2 reduction, with representative fleets highlighted;
+   - table: selected representative fleets with service rate, fallback private cars, system VMT reduction, and system CO2 reduction.
+2. Representative fleet comparison:
+   - compact table using the four selected representative fleets;
+   - no large duplicate figure unless needed.
+3. Vehicle-type contribution:
+   - main mechanism analysis uses 224-seat representative heterogeneous fleets;
+   - analyze vehicle-type served share, vehicle-type VMT share, and distance-bin assignment;
+   - all-car is excluded from vehicle-type assignment plots because it has only one vehicle type;
+   - pilot `x0.50` may be used only as an illustrative secondary mechanism check if it clarifies vehicle utilization;
+   - scooter underuse in the 224-seat setting should be treated as an empirical finding.
+4. Capacity sensitivity:
+   - use residential-origin capacity results as main;
+   - generic capacity run is diagnostic/robustness only.
+5. Pilot-fleet demand sensitivity:
+   - near-112-seat comparable-scale pilot fleets;
+   - emphasize service rate, fallback private cars, supported commuters, and system VMT/CO2 tradeoffs.
+6. Generic-origin robustness:
+   - run deliberately as a robustness check;
+   - do not use accidental generic results as the main evidence.
+7. Multi-station extension:
+   - use selected representative fleets for Caulfield plus one more station;
+   - do not run a full 35-grid unless time allows.
 
 ---
 
@@ -814,6 +901,25 @@ share ∈ {0, 25, 50, 75, 100}
 
 This gives 35 fleet compositions.
 
+Current completed main experiment:
+
+```text
+case study: Melton Station residential-origin demand
+fleet capacity: 224 seats
+fleet compositions: 35
+seeds: 15
+solver runtime: 300 seconds
+time windows: fixed 20-minute slots
+pre-departure margin: 0 minutes
+distance-band penalty: none
+primary reporting metrics: service rate, fallback private cars,
+    system VMT reduction, system energy reduction, and system CO2 reduction.
+secondary evaluation metrics: parking and AV operating cost.
+```
+
+The completed main grid uses system-level VMT, energy, and CO2 metrics that include fallback private cars.
+The completed grid is the residential-origin grid; its routing matrix was verified to match `dataset/MELTON/melton_residential_matrix` exactly.
+
 ---
 
 ## 16. Fleet-Composition Runner
@@ -842,13 +948,136 @@ Important design:
 Common smoke-test pattern:
 
 ```bash
-OUTPUT_DIR=experiments/test_results/electric_fleet_composition_224seats \
+OUTPUT_DIR=experiments/test_results/fleet_composition_grid_224seats \
 TIME_LIMIT_SECONDS=60 \
 N_SEEDS=1 \
-LABELS_OVERRIDE="comp_S25_M25_C25_MB25 comp_S25_M25_C0_MB50 comp_S25_M50_C0_MB25 comp_S100_M0_C0_MB0 comp_S0_M100_C0_MB0 comp_S0_M0_C100_MB0 comp_S0_M0_C0_MB100" \
+LABELS_OVERRIDE="comp_S25_M25_C25_MB25 comp_S25_M0_C0_MB75 comp_S25_M75_C0_MB0 comp_S0_M0_C100_MB0" \
 PARALLEL_JOBS=7 \
 bash experiments/scripts/run_fleet_composition_grid.sh
 ```
+
+The historical smoke labels `comp_S25_M25_C0_MB50` and `comp_S25_M50_C0_MB25` may appear in older notes or outputs, but they are not the current selected representative fleets.
+
+### 16.1 Selected Representative Fleets
+
+The current representative fleets selected from the completed 224-seat residential-origin grid are:
+
+| Representative fleet | Seat shares | 224-seat counts | Role |
+|---|---|---|---|
+| Balanced heterogeneous reference | S25/M25/C25/MB25 | 56 scooters, 28 mopeds, 14 cars, 7 minibuses | Balanced reference |
+| VMT-oriented | S25/M0/C0/MB75 | 56 scooters, 0 mopeds, 0 cars, 21 minibuses | System VMT-oriented representative |
+| Low-emission | S25/M75/C0/MB0 | 56 scooters, 84 mopeds, 0 cars, 0 minibuses | System energy/CO2-oriented representative |
+| All-car homogeneous comparator | S0/M0/C100/MB0 | 0 scooters, 0 mopeds, 56 cars, 0 minibuses | Homogeneous comparator |
+
+All-scooter, all-moped, and all-minibus compositions remain part of the 35-composition grid. They are no longer carried forward as main representative fleets and should be treated as diagnostic/extreme grid cases unless explicitly selected for a separate sensitivity test.
+
+### 16.2 Representative Capacity Sensitivity
+
+The representative capacity sensitivity experiment is implemented by:
+
+```text
+experiments/scripts/run_capacity_sensitivity_representative.sh
+experiments/scripts/plot_capacity_sensitivity_representative.py
+```
+
+Purpose:
+
+- test whether the selected representative fleet strategies remain stable under moderate capacity changes.
+
+Fleet strategies:
+
+```text
+balanced
+vmt_oriented
+low_emission
+all_car
+```
+
+Capacity scales:
+
+```text
+x0.90
+x1.00
+x1.10
+x1.25
+```
+
+Current settings:
+
+- residential-origin demand;
+- 15 seeds;
+- 300-second solver runtime;
+- fixed 20-minute slots;
+- zero pre-departure margin;
+- no distance-band penalty.
+
+The analyzer should extract:
+
+- service rate;
+- fallback private cars;
+- system VMT reduction;
+- system energy reduction;
+- system CO2 reduction;
+- parking metrics;
+- cost metrics where available.
+
+Cost and parking are evaluation-only and do not affect routing.
+
+Current state:
+
+- Generic-input run completed in `experiments/results/capacity_sensitivity_representative_generic` and retained as a robustness/diagnostic result.
+- Residential-origin rerun is completed using `files/inputs/commuters_residential.csv` and `dataset/MELTON/melton_residential_matrix` and checked.
+
+### 16.3 Pilot-Fleet Demand Sensitivity
+
+The pilot-fleet demand sensitivity experiment is implemented by:
+
+```text
+experiments/scripts/run_pilot_fleet_demand_sensitivity.sh
+experiments/scripts/plot_pilot_fleet_demand_sensitivity.py
+```
+
+Purpose:
+
+- evaluate how much observed residential-origin demand a smaller fixed pilot fleet can support.
+
+Demand levels:
+
+```text
+x0.25
+x0.50
+x0.75
+x1.00
+```
+
+Demand subsets are nested and preserve the train-slot distribution using `drop_off_latest`. The default demand sample seed is `42`.
+
+Default near-112-seat pilot fleets:
+
+| Pilot fleet | Counts | Seats |
+|---|---|---:|
+| balanced_pilot | 28 scooters, 14 mopeds, 7 cars, 3 minibuses | 104 |
+| vmt_oriented_pilot | 28 scooters, 0 mopeds, 0 cars, 10 minibuses | 108 |
+| low_emission_pilot | 28 scooters, 42 mopeds, 0 cars, 0 minibuses | 112 |
+| all_car_pilot | 0 scooters, 0 mopeds, 28 cars, 0 minibuses | 112 |
+
+An optional diagnostic `all_minibus_pilot` can be enabled with `INCLUDE_ALL_MINIBUS=1`:
+
+```text
+0 scooters, 0 mopeds, 0 cars, 14 minibuses = 112 seats
+```
+
+Pilot fleets should be described as "near-112-seat pilot fleets" or a "112-seat pilot reference", not as all exactly 112 seats.
+
+Current state: completed under residential-origin demand with the near-112-seat pilot fleets listed above.
+
+Runner design:
+
+- generate configs by copying `config/base_config.json`;
+- modify only `experiment_name`, fleet sizes/types, solver time limit, and pilot metadata;
+- preserve the all-electric energy, emissions, cost, parking, time-window, baseline, and penalty settings from the base config.
+
+The analyzer should extract service, fallback private cars, system VMT/energy/CO2 metrics, parking, and cost metrics into summary CSVs.
 
 ---
 
@@ -938,6 +1167,21 @@ python/tests/test_simulate_utils.py
 
 experiments/scripts/run_fleet_composition_grid.sh
     Fleet-composition experiment runner.
+
+experiments/scripts/plot_fleet_composition_grid.py
+    Fleet-composition summary and plotting script.
+
+experiments/scripts/run_capacity_sensitivity_representative.sh
+    Representative-fleet capacity-sensitivity runner.
+
+experiments/scripts/plot_capacity_sensitivity_representative.py
+    Representative-fleet capacity-sensitivity analyzer and plotter.
+
+experiments/scripts/run_pilot_fleet_demand_sensitivity.sh
+    Pilot-fleet demand-sensitivity runner.
+
+experiments/scripts/plot_pilot_fleet_demand_sensitivity.py
+    Pilot-fleet demand-sensitivity analyzer and plotter.
 
 build_commuters_reachable.cpp
     C++ reachable-origin sampler used by the Myki commuter-generation pipeline.
@@ -1154,10 +1398,12 @@ Immediate next work:
 1. Create and validate this project specification. Completed
 2. Treat residential-origin demand as the main Melton demand input. Completed
 3. Redo solver/configuration calibration experiments under residential-origin demand. Completed; time-limit, seed convergence, pre-departure margin, time-window representation, and distance-band penalty decisions are confirmed.
-4. Refine AV fleet cost assumptions using real cited values before final main fleet-composition, representative, capacity, and cost-related interpretation.
-5. Rerun the main residential full-grid and representative experiments with the refined cost assumptions.
-6. Keep generic reachable-node results as a robustness/sensitivity comparison.
-7. Select additional station case studies.
-8. Share updated outputs with supervisors before the next meeting.
+4. Refine AV fleet cost assumptions using real cited values before final main fleet-composition, representative, capacity, and cost-related interpretation. Completed
+5. Rerun the main residential 224-seat full-grid fleet-composition experiment with refined cost assumptions. Completed
+6. Run representative-fleet capacity sensitivity. Completed under residential-origin demand; the earlier generic-input run is retained as robustness/diagnostic only.
+7. Run pilot-fleet demand sensitivity. Completed under residential-origin demand with near-112-seat pilot fleets.
+8. Run deliberate generic-origin robustness checks. Planned; generic reachable-node results remain robustness/sensitivity comparisons only.
+9. Extend selected representative fleets to multiple stations. Planned for Caulfield plus one additional station; no full 35-grid unless time allows.
+10. Share updated outputs with supervisors before the next meeting.
 
-Solver/configuration calibration experiments may be run before final cost refinement. Main fleet-composition results, representative-fleet comparison, capacity sensitivity, and final cost-related interpretation should use the refined cost assumptions.
+Main fleet-composition results, representative-fleet capacity sensitivity, pilot-fleet demand sensitivity, and final cost-related interpretation should use the refined all-electric energy, emissions, cost, and parking evaluation model.

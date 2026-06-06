@@ -88,15 +88,15 @@
 
   "cost_model": {
     "fixed_cost_per_vehicle": {
-      "Scooter": 8.0,
-      "Moped": 15.0,
-      "Car": 40.0,
-      "Minibus": 80.0
+      "Scooter": 1.98,
+      "Moped": 4.02,
+      "Car": 39.96,
+      "Minibus": 42.59
     },
     "maintenance_cost_per_km": {
-      "Scooter": 0.05,
-      "Moped": 0.08,
-      "Car": 0.18,
+      "Scooter": 0.06,
+      "Moped": 0.04,
+      "Car": 0.04,
       "Minibus": 0.25
     }
   }

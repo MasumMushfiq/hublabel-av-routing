@@ -2,7 +2,7 @@
 # =============================================================================
 # run_representative_fleet_comparison.sh
 # Gather/copy representative fleet outputs from the already-completed
-# fleet composition grid experiment (224 seats, 180s, 15 seeds).
+# fleet composition grid experiment (224 seats, 300s, 15 seeds).
 #
 # Source:
 #   experiments/results/fleet_composition_grid_224seats/
@@ -40,16 +40,19 @@ LABELS_OVERRIDE=${LABELS_OVERRIDE:-}
 
 # display_label|source_condition|destination_label|category|description
 MAPPINGS=(
-    "balanced|comp_S25_M25_C25_MB25|balanced|heterogeneous|Balanced 25/25/25/25 fleet"
-    "vmt_oriented|comp_S25_M25_C0_MB50|vmt_oriented|heterogeneous|VMT-oriented minibus-heavy fleet"
-    "co2_oriented|comp_S25_M50_C0_MB25|co2_oriented|heterogeneous|CO2-oriented moped-heavy fleet"
-    "all_scooter|comp_S100_M0_C0_MB0|all_scooter|homogeneous|All-scooter baseline"
-    "all_moped|comp_S0_M100_C0_MB0|all_moped|homogeneous|All-moped baseline"
-    "all_car|comp_S0_M0_C100_MB0|all_car|homogeneous|All-car baseline"
-    "all_minibus|comp_S0_M0_C0_MB100|all_minibus|homogeneous|All-minibus baseline"
+    "Balanced heterogeneous reference|comp_S25_M25_C25_MB25|balanced|representative|Balanced heterogeneous reference"
+    "VMT-oriented representative|comp_S25_M0_C0_MB75|vmt_oriented|representative|VMT-oriented representative"
+    "Low-emission representative|comp_S25_M75_C0_MB0|low_emission|representative|Low-emission representative"
+    "All-car homogeneous comparator|comp_S0_M0_C100_MB0|all_car|representative|All-car homogeneous comparator"
+
+    # Diagnostic-only mappings. These are not selected by default; use
+    # LABELS_OVERRIDE to gather them for a separate sensitivity check.
+    "All-scooter diagnostic extreme|comp_S100_M0_C0_MB0|all_scooter|diagnostic-only|All-scooter diagnostic grid case"
+    "All-moped diagnostic extreme|comp_S0_M100_C0_MB0|all_moped|diagnostic-only|All-moped diagnostic grid case"
+    "All-minibus diagnostic extreme|comp_S0_M0_C0_MB100|all_minibus|diagnostic-only|All-minibus diagnostic grid case"
 )
 
-BASE_LABELS=(balanced vmt_oriented co2_oriented all_scooter all_moped all_car all_minibus)
+BASE_LABELS=(balanced vmt_oriented low_emission all_car)
 
 if [[ -n "$LABELS_OVERRIDE" ]]; then
     # shellcheck disable=SC2206

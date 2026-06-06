@@ -13,7 +13,7 @@
 #   Total   : 35 compositions × N_SEEDS (default 15) jobs
 #   Capacity: 224 seats fixed across all conditions (56 seats per 25% block)
 #   Demand  : 1465 Myki commuters
-#   Solver  : PyVRP/HGS, default time limit 180s, fixed_slots 20 min, buffer 0,
+#   Solver  : PyVRP/HGS, default time limit 300s, fixed_slots 20 min, buffer 0,
 #             penalty 'none'
 #
 # Results and configs:
@@ -27,14 +27,14 @@
 #   RESUME=1         skip completed runs (default: skip if done)
 #   PARALLEL_JOBS=N  parallel workers (default: ncpu-2)
 #   LABELS_OVERRIDE  space-separated list of condition labels to run only
-#   TIME_LIMIT_SECONDS   solver time limit (default: 180)
+#   TIME_LIMIT_SECONDS   solver time limit (default: 300)
 #   N_SEEDS              number of random seeds (default: 15)
 #   OUTPUT_DIR           output root (default: experiments/results/fleet_composition_grid_224seats)
 #                        RESULTS_DIR is also accepted as a legacy alias
 #   CONFIGS_DIR          configs output dir (default: OUTPUT_DIR/configs)
 #   BASE_CONFIG          canonical config template (default: config/base_config.json)
-#   COMMUTERS_CSV        commuter demand file (default: $ROOT/files/inputs/commuters.csv)
-#   MATRICES_DIR         distance/duration matrix dir (default: $ROOT/dataset/MELTON/melton_generic_matrix)
+#   COMMUTERS_CSV        commuter demand file (default: $ROOT/files/inputs/commuters_residential.csv)
+#   MATRICES_DIR         distance/duration matrix dir (default: $ROOT/dataset/MELTON/melton_residential_matrix)
 #   STATIONS_CSV         station file (default: $ROOT/files/inputs/stations.csv)
 #
 # Usage (from hub_label/ root):
@@ -59,9 +59,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 PYVRP_SCRIPT="$ROOT/python/simulate_first_mile_pyvrp.py"
-COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters.csv}"
+# Residential-origin demand is the main paper setting. Use generic
+# reachable-node demand only through explicit overrides or clearly named
+# robustness output folders.
+COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters_residential.csv}"
 STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
-MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
+MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_residential_matrix}"
 BASE_CONFIG=${BASE_CONFIG:-config/base_config.json}
 if [[ "$BASE_CONFIG" != /* ]]; then
     BASE_CONFIG="$ROOT/$BASE_CONFIG"
@@ -79,7 +82,7 @@ if [[ "$CONFIGS_DIR" != /* ]]; then
 fi
 
 # ── Parameters ────────────────────────────────────────────────────────────────
-TIME_LIMIT_SECONDS=${TIME_LIMIT_SECONDS:-180}
+TIME_LIMIT_SECONDS=${TIME_LIMIT_SECONDS:-300}
 N_SEEDS=${N_SEEDS:-15}
 DRY_RUN=${DRY_RUN:-0}
 RESUME=${RESUME:-1}

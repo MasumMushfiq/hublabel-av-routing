@@ -7,26 +7,29 @@ set -euo pipefail
 # Fixed-fleet pilot demand sensitivity for SIGSPATIAL 2026 AV first-mile paper.
 #
 # Research question:
-#   If an agency starts with a smaller fixed pilot fleet (112 seats), how much
-#   morning-peak demand can it support effectively?
+#   If an agency starts with a smaller near-112-seat pilot fleet, how much
+#   observed residential-origin morning-peak demand can it support?
 #
 # Design:
-#   - 4 pilot fleets, each exactly 112 seats
+#   - 4 default pilot fleets around the 112-seat reference
 #   - 4 demand fractions of 1465 Myki commuters: x0.25, x0.50, x0.75, x1.00
 #   - Demand sampled once per level (DEMAND_SAMPLE_SEED=42), nested subsets
 #   - All fleets and seeds solve the same demand instance at each level
-#   - Solver: PyVRP/HGS, 180s, fixed_slots 20-min, buffer 0, penalty none
+#   - Solver: PyVRP/HGS, 300s, fixed_slots 20-min, buffer 0, penalty none
+#   - All-electric energy/emissions model from config/base_config.json
+#   - Raw-distance objective; cost and parking are evaluation-only metrics
 #   - x1.00 is intentionally an overload/stress-test case
 #
-# Pilot fleets (112 seats each):
-#   balanced_pilot    : 24 scooters, 12 mopeds, 6 cars, 5 minibuses
-#   vmt_oriented_pilot: 28 scooters, 14 mopeds, 0 cars, 7 minibuses
-#   low_emission_pilot: 24 scooters, 28 mopeds, 0 cars, 4 minibuses
-#   all_minibus_pilot : 0  scooters, 0  mopeds, 0 cars, 14 minibuses
+# Pilot fleets:
+#   balanced_pilot     : 28 scooters, 14 mopeds, 7 cars, 3 minibuses = 104 seats
+#   vmt_oriented_pilot : 28 scooters, 0 mopeds, 0 cars, 10 minibuses = 108 seats
+#   low_emission_pilot : 28 scooters, 42 mopeds, 0 cars, 0 minibuses = 112 seats
+#   all_car_pilot      : 0 scooters, 0 mopeds, 28 cars, 0 minibuses = 112 seats
+#   all_minibus_pilot  : optional diagnostic with INCLUDE_ALL_MINIBUS=1
 #
 # Result layout:
 #   experiments/results/pilot_fleet_demand_sensitivity/
-#     configs/
+#     configs/{fleet}_{demand}.json
 #     inputs/x0.25/commuters.csv  ...  inputs/demand_level_summary.csv
 #     balanced_pilot/x0.25/seed_1/{assignments,av_routes,baseline,metrics,comparison}.json
 #     ...
@@ -34,13 +37,13 @@ set -euo pipefail
 # Usage:
 #   bash experiments/scripts/run_pilot_fleet_demand_sensitivity.sh
 #   DRY_RUN=1 bash experiments/scripts/run_pilot_fleet_demand_sensitivity.sh
-#   NUM_SEEDS=3  RESUME=1 JOBS=10 bash experiments/scripts/run_pilot_fleet_demand_sensitivity.sh
-#   NUM_SEEDS=10 RESUME=1 JOBS=10 bash experiments/scripts/run_pilot_fleet_demand_sensitivity.sh
+#   NUM_SEEDS=15 RESUME=1 JOBS=10 bash experiments/scripts/run_pilot_fleet_demand_sensitivity.sh
 #
 # Input overrides:
-#   COMMUTERS_CSV default: $ROOT/files/inputs/commuters.csv
+#   COMMUTERS_CSV default: $ROOT/files/inputs/commuters_residential.csv
 #   STATIONS_CSV  default: $ROOT/files/inputs/stations.csv
-#   MATRICES_DIR  default: $ROOT/dataset/MELTON/melton_generic_matrix
+#   MATRICES_DIR  default: $ROOT/dataset/MELTON/melton_residential_matrix
+#   BASE_CONFIG   default: $ROOT/config/base_config.json
 # =============================================================================
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -52,21 +55,26 @@ SIM_SCRIPT="${SIM_SCRIPT:-python/simulate_first_mile_pyvrp.py}"
 
 EXPERIMENT="pilot_fleet_demand_sensitivity"
 RESULTS_ROOT="${RESULTS_ROOT:-experiments/results/${EXPERIMENT}}"
-CONFIG_DIR="${RESULTS_ROOT}/configs"
-INPUT_DIR="${RESULTS_ROOT}/inputs"
+CONFIG_DIR="${CONFIG_DIR:-${CONFIG_ROOT:-${RESULTS_ROOT}/configs}}"
+INPUT_DIR="${INPUT_DIR:-${RESULTS_ROOT}/inputs}"
 
-TIME_LIMIT="${TIME_LIMIT:-180}"
-NUM_SEEDS="${NUM_SEEDS:-3}"
-JOBS="${JOBS:-10}"
+TIME_LIMIT="${TIME_LIMIT:-300}"
+NUM_SEEDS="${NUM_SEEDS:-15}"
+JOBS="${JOBS:-${PARALLEL_JOBS:-10}}"
 RESUME="${RESUME:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 DEMAND_SAMPLE_SEED="${DEMAND_SAMPLE_SEED:-42}"
+INCLUDE_ALL_MINIBUS="${INCLUDE_ALL_MINIBUS:-0}"
 
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-FULL_COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters.csv}"
+FULL_COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters_residential.csv}"
 STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
-MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
+MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_residential_matrix}"
+BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/base_config.json}"
+if [[ "$BASE_CONFIG" != /* ]]; then
+  BASE_CONFIG="$ROOT/$BASE_CONFIG"
+fi
 
 JOBS_FILE="${RESULTS_ROOT}/jobs.txt"
 JOBLOG="${RESULTS_ROOT}/parallel_joblog.tsv"
@@ -75,8 +83,11 @@ declare -a FLEETS=(
   "balanced_pilot"
   "vmt_oriented_pilot"
   "low_emission_pilot"
-  "all_minibus_pilot"
+  "all_car_pilot"
 )
+if [[ "$INCLUDE_ALL_MINIBUS" == "1" ]]; then
+  FLEETS+=("all_minibus_pilot")
+fi
 
 declare -a DEMAND_LEVELS=(
   "x0.25"
@@ -91,16 +102,17 @@ declare -a DEMAND_LEVELS=(
 # -----------------------------------------------------------------------------
 get_fleet_counts() {
   case "$1" in
-    balanced_pilot)     echo "24 12 6 5 112" ;;   # 24+24+24+40 = 112
-    vmt_oriented_pilot) echo "28 14 0 7 112" ;;   # 28+28+0+56  = 112
-    low_emission_pilot) echo "24 28 0 4 112" ;;   # 24+56+0+32  = 112
-    all_minibus_pilot)  echo "0  0  0 14 112" ;;  # 0+0+0+112   = 112
+    balanced_pilot)     echo "28 14 7 3 104" ;;   # 28+28+28+24 = 104
+    vmt_oriented_pilot) echo "28 0  0 10 108" ;;  # 28+0+0+80   = 108
+    low_emission_pilot) echo "28 42 0 0 112" ;;   # 28+84+0+0   = 112
+    all_car_pilot)      echo "0  0 28 0 112" ;;   # 0+0+112+0   = 112
+    all_minibus_pilot)  echo "0  0  0 14 112" ;;  # optional diagnostic
     *) echo "Unknown fleet: $1" >&2; exit 1 ;;
   esac
 }
 
 # -----------------------------------------------------------------------------
-# Generate one JSON config per pilot fleet.
+# Generate one JSON config per pilot fleet/demand level.
 # Vehicle types with fleet_size=0 are omitted (PyVRP requires num_available>0).
 # -----------------------------------------------------------------------------
 generate_configs() {
@@ -108,110 +120,85 @@ generate_configs() {
 
   for fleet in "${FLEETS[@]}"; do
     read -r n_scooter n_moped n_car n_minibus total_seats < <(get_fleet_counts "$fleet")
-    local config_path="${CONFIG_DIR}/${fleet}.json"
+    for demand in "${DEMAND_LEVELS[@]}"; do
+      local config_path="${CONFIG_DIR}/${fleet}_${demand}.json"
 
-    "$PYTHON_BIN" - \
-        "$fleet" "$n_scooter" "$n_moped" "$n_car" "$n_minibus" \
-        "$total_seats" "$TIME_LIMIT" "$config_path" << 'PYEOF'
-import sys, json
+      "$PYTHON_BIN" - \
+          "$BASE_CONFIG" "$config_path" "$fleet" "$demand" "$TIME_LIMIT" \
+          "$n_scooter" "$n_moped" "$n_car" "$n_minibus" "$total_seats" \
+          "$DEMAND_SAMPLE_SEED" << 'PYEOF'
+import copy
+import json
+import sys
 
-fleet       = sys.argv[1]
-n_scooter   = int(sys.argv[2])
-n_moped     = int(sys.argv[3])
-n_car       = int(sys.argv[4])
-n_minibus   = int(sys.argv[5])
-total_seats = int(sys.argv[6])
-time_limit  = int(sys.argv[7])
-out_path    = sys.argv[8]
-
-VEHICLE_PARAMS = {
-    "scooter": {
-        "capacity": 1, "max_speed_kmph": 25,
-        "fuel_l_per_100km": 2.0, "co2_kg_per_liter": 2.35,
-        "distance_band": {"lower_km": 0.0, "upper_km": 2.0},
-    },
-    "moped": {
-        "capacity": 2, "max_speed_kmph": 45,
-        "fuel_l_per_100km": 3.0, "co2_kg_per_liter": 2.35,
-        "distance_band": {"lower_km": 1.5, "upper_km": 6.0},
-    },
-    "car": {
-        "capacity": 4, "max_speed_kmph": 80,
-        "fuel_l_per_100km": 11.1, "co2_kg_per_liter": 2.35,
-        "distance_band": {"lower_km": 4.0, "upper_km": 12.0},
-    },
-    "minibus": {
-        "capacity": 8, "max_speed_kmph": 70,
-        "fuel_l_per_100km": 14.0, "co2_kg_per_liter": 2.68,
-        "distance_band": {"lower_km": 8.0, "upper_km": 20.0},
-    },
-}
-
+base_config, out_path, fleet, demand_scale = sys.argv[1:5]
+time_limit = int(sys.argv[5])
 counts = {
-    "scooter": n_scooter,
-    "moped":   n_moped,
-    "car":     n_car,
-    "minibus": n_minibus,
+    "scooter": int(sys.argv[6]),
+    "moped": int(sys.argv[7]),
+    "car": int(sys.argv[8]),
+    "minibus": int(sys.argv[9]),
+}
+total_seats = int(sys.argv[10])
+demand_sample_seed = int(sys.argv[11])
+
+labels = {
+    "balanced_pilot": ("Balanced pilot", "S25/M25/C25/MB25"),
+    "vmt_oriented_pilot": ("VMT-Opt pilot", "S25/M0/C0/MB75"),
+    "low_emission_pilot": ("Low-Emission pilot", "S25/M75/C0/MB0"),
+    "all_car_pilot": ("All-Car pilot", "S0/M0/C100/MB0"),
+    "all_minibus_pilot": ("All-minibus pilot", "S0/M0/C0/MB100"),
 }
 
-vehicle_types = []
-for vt in ["scooter", "moped", "car", "minibus"]:
-    n = counts[vt]
-    if n <= 0:
+with open(base_config, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+base_vehicle_by_name = {
+    vehicle["name"].lower(): vehicle
+    for vehicle in cfg["fleet"]["vehicle_types"]
+}
+missing = [name for name in counts if name not in base_vehicle_by_name]
+if missing:
+    raise ValueError(f"Base config missing vehicle definitions: {missing}")
+
+cfg["experiment_name"] = f"pilot_fleet_demand_sensitivity_{fleet}_{demand_scale}"
+cfg.setdefault("solver_config", {})["time_limit_seconds"] = time_limit
+
+display_label, seat_share_label = labels[fleet]
+cfg["pilot_fleet_metadata"] = {
+    "fleet_key": fleet,
+    "display_label": display_label,
+    "target_seat_share_label": seat_share_label,
+    "total_seats": total_seats,
+    "scooter_count": counts["scooter"],
+    "moped_count": counts["moped"],
+    "car_count": counts["car"],
+    "minibus_count": counts["minibus"],
+    "demand_sensitivity_experiment": True,
+    "demand_scale": demand_scale,
+    "demand_sample_seed": demand_sample_seed,
+    "note": (
+        "Near-112-seat pilot fleet for demand sensitivity. Some target "
+        "seat-share compositions approximate the 112-seat pilot reference "
+        "because integer vehicle counts make the exact capacity impossible."
+    ),
+}
+
+cfg["fleet"]["vehicle_types"] = []
+for name in ["scooter", "moped", "car", "minibus"]:
+    count = counts[name]
+    if count <= 0:
         continue
-    p = VEHICLE_PARAMS[vt]
-    vehicle_types.append({
-        "name":                vt,
-        "fleet_size":          n,
-        "capacity":            p["capacity"],
-        "max_speed_kmph":      p["max_speed_kmph"],
-        "fuel_l_per_100km":    p["fuel_l_per_100km"],
-        "co2_kg_per_liter":    p["co2_kg_per_liter"],
-        "distance_band":       p["distance_band"],
-        "fixed_cost_km_equiv": 0.0,
-    })
+    vehicle_cfg = copy.deepcopy(base_vehicle_by_name[name])
+    vehicle_cfg["fleet_size"] = count
+    cfg["fleet"]["vehicle_types"].append(vehicle_cfg)
 
-cfg = {
-    "experiment_name": f"pilot_fleet_demand_sensitivity_{fleet}",
-    "pilot_fleet_metadata": {
-        "fleet_key":    fleet,
-        "total_seats":  total_seats,
-        "note": (
-            "Approximately balanced 112-seat integer fleet; exact 25% seat "
-            "shares are not possible with integer minibuses at 112 seats."
-            if fleet == "balanced_pilot" else
-            f"Fixed 112-seat pilot fleet: {fleet}"
-        ),
-    },
-    "fleet": {"vehicle_types": vehicle_types},
-    "solver_config": {
-        "time_limit_seconds": time_limit,
-    },
-    "time_window": {
-        "mode":                        "fixed_slots",
-        "interval_minutes":            20,
-        "start_time_minutes":          420,
-        "end_time_minutes":            570,
-        "buffer_before_deadline_minutes": 0,
-    },
-    "penalty_parameters": {
-        "alpha":              1.0,
-        "beta":               1.0,
-        "penalty_mode":       "none",
-        "preference_scale_m": 500,
-    },
-    "baseline_parameters": {
-        "private_car_fuel_l_per_100km": 11.1,
-        "private_car_co2_kg_per_liter": 2.35,
-        "private_car_speed_kmph":       80.0,
-    },
-}
-
-with open(out_path, "w") as f:
+with open(out_path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2)
 
 print(f"  Wrote config: {out_path}")
 PYEOF
+    done
   done
 }
 
@@ -412,7 +399,7 @@ build_jobs() {
   for fleet in "${FLEETS[@]}"; do
     for demand in "${DEMAND_LEVELS[@]}"; do
       for seed in $(seq 1 "$NUM_SEEDS"); do
-        local config_path="${CONFIG_DIR}/${fleet}.json"
+        local config_path="${CONFIG_DIR}/${fleet}_${demand}.json"
         local commuters_csv="${INPUT_DIR}/${demand}/commuters.csv"
         local run_dir="${RESULTS_ROOT}/${fleet}/${demand}/seed_${seed}"
         printf "%s %s %s %s %s %s\n" \
@@ -485,7 +472,7 @@ export -f progress_tick
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║     PyVRP PILOT FLEET DEMAND SENSITIVITY — 112 SEATS FIXED     ║"
+echo "║     PyVRP PILOT FLEET DEMAND SENSITIVITY — NEAR-112 SEATS       ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "  Experiment    : ${EXPERIMENT}"
@@ -493,8 +480,9 @@ echo "  Results root  : ${RESULTS_ROOT}"
 echo "  Config dir    : ${CONFIG_DIR}"
 echo "  Input dir     : ${INPUT_DIR}"
 echo "  Matrix dir    : ${MATRICES_DIR}"
+echo "  Base config   : ${BASE_CONFIG}"
 echo ""
-echo "  Pilot fleets (each exactly 112 seats):"
+echo "  Pilot fleets (near the 112-seat pilot reference):"
 for fleet in "${FLEETS[@]}"; do
   read -r ns nm nc nb seats < <(get_fleet_counts "$fleet")
   printf "    %-22s  scooters=%2d  mopeds=%2d  cars=%d  minibuses=%2d  seats=%d\n" \
@@ -511,12 +499,13 @@ echo "  DRY_RUN       : ${DRY_RUN}"
 echo "  RESUME        : ${RESUME}"
 echo "  JOBS          : ${JOBS}"
 echo "  DEMAND_SAMPLE_SEED: ${DEMAND_SAMPLE_SEED}"
+echo "  INCLUDE_ALL_MINIBUS: ${INCLUDE_ALL_MINIBUS}"
 echo ""
 
 # Validate prerequisites
 command -v "$PYTHON_BIN" >/dev/null 2>&1 \
   || { echo "ERROR: Python not found: $PYTHON_BIN"; exit 1; }
-for f in "$SIM_SCRIPT" "$FULL_COMMUTERS_CSV" "$STATIONS_CSV"; do
+for f in "$SIM_SCRIPT" "$FULL_COMMUTERS_CSV" "$STATIONS_CSV" "$BASE_CONFIG"; do
   [[ -f "$f" ]] || { echo "ERROR: Missing file: $f"; exit 1; }
 done
 [[ -d "$MATRICES_DIR" ]] || { echo "ERROR: Missing matrices dir: $MATRICES_DIR"; exit 1; }
@@ -552,7 +541,7 @@ else
   RUNNABLE=$TOTAL
 fi
 
-echo "  Total planned jobs  : ${TOTAL}  (${NUM_SEEDS} seeds × 4 fleets × 4 demand levels)"
+echo "  Total planned jobs  : ${TOTAL}  (${NUM_SEEDS} seeds × ${#FLEETS[@]} fleets × 4 demand levels)"
 echo "  Runnable after RESUME filter: ${RUNNABLE}"
 echo ""
 

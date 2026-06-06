@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Capacity sensitivity for selected representative heterogeneous fleets.
+# Capacity sensitivity for selected representative fleets.
 # Paper setup:
+# - residential-origin demand
 # - PyVRP/HGS
-# - 180s solver time limit
+# - 300s solver time limit
 # - 15 seeds
 # - fixed 20-minute train-aligned slots
 # - 0-minute buffer
@@ -13,8 +14,9 @@ set -euo pipefail
 #
 # Fleets:
 #   balanced      = S25/M25/C25/MB25
-#   vmt_oriented  = S25/M25/C0/MB50
-#   low_emission  = S25/M50/C0/MB25
+#   vmt_oriented  = S25/M0/C0/MB75
+#   low_emission  = S25/M75/C0/MB0
+#   all_car       = S0/M0/C100/MB0
 #
 # Capacity scales:
 #   x0.90, x1.00, x1.10, x1.25 relative to the 224-seat reference.
@@ -30,10 +32,10 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 SIM_SCRIPT="${SIM_SCRIPT:-python/simulate_first_mile_pyvrp.py}"
 
-RESULTS_ROOT="${RESULTS_ROOT:-experiments/results/capacity_sensitivity_representative}"
+RESULTS_ROOT="${RESULTS_ROOT:-$ROOT/experiments/results/capacity_sensitivity_representative_residential}"
 CONFIG_ROOT="${CONFIG_ROOT:-${RESULTS_ROOT}/configs}"
 
-TIME_LIMIT="${TIME_LIMIT:-180}"
+TIME_LIMIT="${TIME_LIMIT:-300}"
 NUM_SEEDS="${NUM_SEEDS:-15}"
 
 # Dry-run flag: support env var or first positional arg
@@ -53,20 +55,19 @@ mkdir -p "$CONFIG_ROOT"
 
 # ---------------------------------------------------------------------
 # Base data paths. Override with COMMUTERS_CSV, STATIONS_CSV, or MATRICES_DIR.
-# Default matrices: $ROOT/dataset/MELTON/melton_generic_matrix.
+# Residential-origin demand is the main paper setting. Use generic
+# reachable-node demand only through explicit overrides or clearly named
+# robustness output folders.
+# Default matrices: $ROOT/dataset/MELTON/melton_residential_matrix.
 # ---------------------------------------------------------------------
 
-COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters.csv}"
+COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters_residential.csv}"
 STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
-MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
-
-# ---------------------------------------------------------------------
-# Vehicle parameters.
-# ---------------------------------------------------------------------
-# Scooter: capacity 1, 25 km/h, 2.0 L/100km, petrol 2.35 kg/L
-# Moped:   capacity 2, 45 km/h, 3.0 L/100km, petrol 2.35 kg/L
-# Car:     capacity 4, 80 km/h, 11.1 L/100km, petrol 2.35 kg/L
-# Minibus: capacity 8, 70 km/h, 14.0 L/100km, diesel 2.68 kg/L
+MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_residential_matrix}"
+BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/base_config.json}"
+if [[ "$BASE_CONFIG" != /* ]]; then
+  BASE_CONFIG="$ROOT/$BASE_CONFIG"
+fi
 
 # ---------------------------------------------------------------------
 # Fleet definitions.
@@ -76,8 +77,9 @@ MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
 #
 # Reference 224-seat compositions:
 # Balanced:     56S / 28M / 14C / 7MB    = 224 seats
-# VMT-oriented: 56S / 28M / 0C  / 14MB   = 224 seats
-# Low-emission: 56S / 56M / 0C  / 7MB    = 224 seats
+# VMT-oriented: 56S / 0M  / 0C  / 21MB   = 224 seats
+# Low-emission: 56S / 84M / 0C  / 0MB    = 224 seats
+# All-car:      0S  / 0M  / 56C / 0MB    = 224 seats
 #
 # Scaled counts:
 #
@@ -91,6 +93,7 @@ declare -a FLEETS=(
   "balanced"
   "vmt_oriented"
   "low_emission"
+  "all_car"
 )
 
 declare -a SCALES=(
@@ -118,23 +121,31 @@ get_counts() {
 
   elif [[ "$fleet" == "vmt_oriented" ]]; then
     case "$scale" in
-      # Seat shares: S25/M25/C0/MB50
-      # x0.90: approximately 50 scooter seats, 50 moped seats, 100 minibus seats
-      "x0.90") echo "50 25 0 13 204" ;;
-      "x1.00") echo "56 28 0 14 224" ;;
-      "x1.10") echo "62 31 0 15 244" ;;
-      "x1.25") echo "70 35 0 18 284" ;;
+      # Seat shares: S25/M0/C0/MB75
+      "x0.90") echo "50 0 0 19 202" ;;
+      "x1.00") echo "56 0 0 21 224" ;;
+      "x1.10") echo "62 0 0 23 246" ;;
+      "x1.25") echo "70 0 0 26 278" ;;
       *) echo "Unknown scale: $scale" >&2; exit 1 ;;
     esac
 
   elif [[ "$fleet" == "low_emission" ]]; then
     case "$scale" in
-      # Seat shares: S25/M50/C0/MB25
-      # x0.90: approximately 50 scooter seats, 100 moped seats, 50 minibus seats
-      "x0.90") echo "50 50 0 6 198" ;;
-      "x1.00") echo "56 56 0 7 224" ;;
-      "x1.10") echo "62 62 0 8 250" ;;
-      "x1.25") echo "70 70 0 9 282" ;;
+      # Seat shares: S25/M75/C0/MB0
+      "x0.90") echo "50 76 0 0 202" ;;
+      "x1.00") echo "56 84 0 0 224" ;;
+      "x1.10") echo "62 93 0 0 248" ;;
+      "x1.25") echo "70 105 0 0 280" ;;
+      *) echo "Unknown scale: $scale" >&2; exit 1 ;;
+    esac
+
+  elif [[ "$fleet" == "all_car" ]]; then
+    case "$scale" in
+      # Seat shares: S0/M0/C100/MB0
+      "x0.90") echo "0 0 50 0 200" ;;
+      "x1.00") echo "0 0 56 0 224" ;;
+      "x1.10") echo "0 0 62 0 248" ;;
+      "x1.25") echo "0 0 70 0 280" ;;
       *) echo "Unknown scale: $scale" >&2; exit 1 ;;
     esac
 
@@ -151,86 +162,71 @@ make_config() {
 
   read -r n_scooter n_moped n_car n_minibus total_seats < <(get_counts "$fleet" "$scale")
 
-  {
-    echo "{"
-    echo "  \"experiment_name\": \"capacity_sensitivity_${fleet}_${scale}\","
-    echo
-    echo "  \"fleet\": {"
-    echo "    \"vehicle_types\": ["
+  "$PYTHON_BIN" - "$BASE_CONFIG" "$config_path" "$fleet" "$scale" "$TIME_LIMIT" "$n_scooter" "$n_moped" "$n_car" "$n_minibus" "$total_seats" <<'PYEOF'
+import copy
+import json
+import sys
 
-    local first_vehicle=1
-    add_vehicle_type() {
-      local name="$1"
-      local count="$2"
-      local capacity="$3"
-      local speed="$4"
-      local fuel="$5"
-      local co2="$6"
-      local lower="$7"
-      local upper="$8"
+base_config, config_path, fleet, scale = sys.argv[1:5]
+time_limit = int(sys.argv[5])
+counts = {
+    "scooter": int(sys.argv[6]),
+    "moped": int(sys.argv[7]),
+    "car": int(sys.argv[8]),
+    "minibus": int(sys.argv[9]),
+}
+total_seats = int(sys.argv[10])
 
-      [[ "$count" -le 0 ]] && return 0
+labels = {
+    "balanced": ("Balanced", "S25/M25/C25/MB25"),
+    "vmt_oriented": ("VMT-Opt", "S25/M0/C0/MB75"),
+    "low_emission": ("Low-Emission", "S25/M75/C0/MB0"),
+    "all_car": ("All-Car", "S0/M0/C100/MB0"),
+}
 
-      if [[ "$first_vehicle" -eq 0 ]]; then
-        echo "      ,"
-      fi
+with open(base_config, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
 
-      cat <<JSONEOF
-      {
-        "name": "${name}",
-        "fleet_size": ${count},
-        "capacity": ${capacity},
-        "max_speed_kmph": ${speed},
-        "fuel_l_per_100km": ${fuel},
-        "co2_kg_per_liter": ${co2},
-        "distance_band": {"lower_km": ${lower}, "upper_km": ${upper}},
-        "fixed_cost_km_equiv": 0.0
-      }
-JSONEOF
+base_vehicle_by_name = {
+    vehicle["name"].lower(): vehicle
+    for vehicle in cfg["fleet"]["vehicle_types"]
+}
+missing = [name for name in counts if name not in base_vehicle_by_name]
+if missing:
+    raise ValueError(f"Base config missing vehicle definitions: {missing}")
 
-      first_vehicle=0
-    }
+cfg["experiment_name"] = f"capacity_sensitivity_{fleet}_{scale}"
+cfg["capacity_metadata"] = {
+    "fleet": fleet,
+    "scale": scale,
+    "total_fleet_seats": total_seats,
+    "scooter_count": counts["scooter"],
+    "moped_count": counts["moped"],
+    "car_count": counts["car"],
+    "minibus_count": counts["minibus"],
+    "display_label": labels[fleet][0],
+    "seat_share_label": labels[fleet][1],
+}
+cfg.setdefault("solver_config", {})["time_limit_seconds"] = time_limit
+cfg["fleet"]["vehicle_types"] = []
 
-    add_vehicle_type "scooter" "$n_scooter" 1 25 2.0 2.35 0.0 2.0
-    add_vehicle_type "moped" "$n_moped" 2 45 3.0 2.35 1.5 6.0
-    add_vehicle_type "car" "$n_car" 4 80 11.1 2.35 4.0 12.0
-    add_vehicle_type "minibus" "$n_minibus" 8 70 14.0 2.68 8.0 20.0
+for name in ["scooter", "moped", "car", "minibus"]:
+    count = counts[name]
+    if count <= 0:
+        continue
+    vehicle_cfg = copy.deepcopy(base_vehicle_by_name[name])
+    vehicle_cfg["fleet_size"] = count
+    cfg["fleet"]["vehicle_types"].append(vehicle_cfg)
 
-    echo
-    echo "    ]"
-    echo "  },"
-
-    echo "  \"solver_config\": {"
-    echo "    \"time_limit_seconds\": ${TIME_LIMIT}"
-    echo "  },"
-    echo
-    echo "  \"time_window\": {"
-    echo "    \"mode\": \"fixed_slots\","
-    echo "    \"interval_minutes\": 20,"
-    echo "    \"start_time_minutes\": 420,"
-    echo "    \"end_time_minutes\": 570,"
-    echo "    \"buffer_before_deadline_minutes\": 0"
-    echo "  },"
-
-    echo "  \"penalty_parameters\": {"
-    echo "    \"alpha\": 1.0,"
-    echo "    \"beta\": 1.0,"
-    echo "    \"penalty_mode\": \"none\","
-    echo "    \"preference_scale_m\": 500"
-    echo "  },"
-
-    echo "  \"baseline_parameters\": {"
-    echo "    \"private_car_fuel_l_per_100km\": 11.1,"
-    echo "    \"private_car_co2_kg_per_liter\": 2.35,"
-    echo "    \"private_car_speed_kmph\": 80.0"
-    echo "  }"
-    echo "}"
-  } > "$config_path"
+with open(config_path, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
 }
 
 echo "Running representative fleet capacity sensitivity"
 echo "Results root: ${RESULTS_ROOT}"
 echo "Config root:  ${CONFIG_ROOT}"
+echo "Base config:  ${BASE_CONFIG}"
 echo "Time limit:   ${TIME_LIMIT}s"
 echo "Seeds:        ${NUM_SEEDS}"
 echo "Dry run:      ${DRY_RUN}"
@@ -240,7 +236,7 @@ echo
 
 # Validate prereqs before generating configs or jobs.
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || { echo "ERROR: Missing command: $PYTHON_BIN"; exit 1; }
-for f in "$SIM_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV"; do
+for f in "$SIM_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$BASE_CONFIG"; do
   [[ -f "$f" ]] || { echo "ERROR: Missing file: $f"; exit 1; }
 done
 [[ -d "$MATRICES_DIR" ]] || { echo "ERROR: Missing matrices dir: $MATRICES_DIR"; exit 1; }
