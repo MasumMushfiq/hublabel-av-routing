@@ -21,7 +21,7 @@ set -euo pipefail
 #   - x1.00 is intentionally an overload/stress-test case
 #
 # Pilot fleets:
-#   balanced_pilot     : 28 scooters, 14 mopeds, 7 cars, 3 minibuses = 104 seats
+#   balanced_pilot     : 28 scooters, 14 mopeds, 7 cars, 3 minibuses = 108 seats
 #   vmt_oriented_pilot : 28 scooters, 0 mopeds, 0 cars, 10 minibuses = 108 seats
 #   low_emission_pilot : 28 scooters, 42 mopeds, 0 cars, 0 minibuses = 112 seats
 #   all_car_pilot      : 0 scooters, 0 mopeds, 28 cars, 0 minibuses = 112 seats
@@ -102,7 +102,7 @@ declare -a DEMAND_LEVELS=(
 # -----------------------------------------------------------------------------
 get_fleet_counts() {
   case "$1" in
-    balanced_pilot)     echo "28 14 7 3 104" ;;   # 28+28+28+24 = 104
+    balanced_pilot)     echo "28 14 7 3 108" ;;   # 28+28+28+24 = 108
     vmt_oriented_pilot) echo "28 0  0 10 108" ;;  # 28+0+0+80   = 108
     low_emission_pilot) echo "28 42 0 0 112" ;;   # 28+84+0+0   = 112
     all_car_pilot)      echo "0  0 28 0 112" ;;   # 0+0+112+0   = 112
@@ -144,9 +144,9 @@ demand_sample_seed = int(sys.argv[11])
 
 labels = {
     "balanced_pilot": ("Balanced pilot", "S25/M25/C25/MB25"),
-    "vmt_oriented_pilot": ("VMT-Opt pilot", "S25/M0/C0/MB75"),
-    "low_emission_pilot": ("Low-Emission pilot", "S25/M75/C0/MB0"),
-    "all_car_pilot": ("All-Car pilot", "S0/M0/C100/MB0"),
+    "vmt_oriented_pilot": ("VMT-oriented pilot", "S25/M0/C0/MB75"),
+    "low_emission_pilot": ("Low-emission pilot", "S25/M75/C0/MB0"),
+    "all_car_pilot": ("All-car pilot", "S0/M0/C100/MB0"),
     "all_minibus_pilot": ("All-minibus pilot", "S0/M0/C0/MB100"),
 }
 

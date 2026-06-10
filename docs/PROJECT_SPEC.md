@@ -538,7 +538,7 @@ All of the following are modeled as electric:
 - fallback private car,
 - private-car baseline.
 
-There is no active petrol/diesel model in the main pipeline.
+There is no active combustion-engine model in the main pipeline.
 
 Global parameters:
 
@@ -785,7 +785,7 @@ Primary paper metrics:
 
 Secondary metrics:
 
-- served commuters;
+- served commuters / supported commuters;
 - AV operating cost per commuter or per served commuter;
 - parking reduction / net parking reduction;
 - pooling or vehicle-type assignment metrics only when explaining mechanisms.
@@ -812,8 +812,8 @@ Suggested placement:
 - Fleet grid: no cost, parking, or in-vehicle time in the main figure.
 - Representative comparison: include in-vehicle time and optionally one cost and one parking metric.
 - Vehicle-type contribution: focus on served share, VMT share, and distance assignment.
-- Capacity sensitivity: focus on service, fallback private cars, VMT, and CO2.
-- Pilot demand sensitivity: focus on service, fallback private cars, supported commuters, and VMT/CO2; cost only if useful.
+- Capacity sensitivity: local sensitivity analysis around the calibrated 224-seat reference, not fleet-size optimization. The main paper-facing figure focuses on system VMT reduction and system CO2 reduction. Service rate and fallback private cars remain in summary CSVs and diagnostics, but they are not the main capacity figure. System metrics include adjusted AV routes plus fallback private-car trips. Generic-origin capacity results remain diagnostic/robustness only.
+- Pilot demand sensitivity: fixed near-112-seat pilot-fleet stress test, not capacity scaling. The main paper-facing figure focuses on service rate and fallback private cars. Supported commuters are retained in summary CSVs and prose as needed. VMT/CO2 pilot plots are diagnostic only unless demand-matched baselines are confirmed. Cost and parking are not main pilot-section metrics unless needed for a separate application discussion.
 
 Current experiment presentation plan:
 
@@ -830,17 +830,61 @@ Current experiment presentation plan:
    - pilot `x0.50` may be used only as an illustrative secondary mechanism check if it clarifies vehicle utilization;
    - scooter underuse in the 224-seat setting should be treated as an empirical finding.
 4. Capacity sensitivity:
-   - use residential-origin capacity results as main;
-   - generic capacity run is diagnostic/robustness only.
+   - use residential-origin capacity results as local sensitivity around the 224-seat reference;
+   - main figure: system VMT reduction and system CO2 reduction vs capacity scale;
+   - service rate and fallback private cars remain diagnostic/supporting metrics;
+   - generic capacity run is diagnostic/robustness only;
+   - runtime diagnostic at `x1.25` indicates high-capacity service behavior is not primarily a 300-second runtime artifact.
 5. Pilot-fleet demand sensitivity:
-   - near-112-seat comparable-scale pilot fleets;
-   - emphasize service rate, fallback private cars, supported commuters, and system VMT/CO2 tradeoffs.
+   - use fixed near-112-seat pilot fleets;
+   - main figure: service rate and fallback private cars vs demand fraction;
+   - supported commuters used in prose/summary;
+   - VMT/CO2 kept diagnostic unless demand-matched baselines are confirmed;
+   - optional `all_minibus_pilot` is excluded from paper-facing analysis.
 6. Generic-origin robustness:
    - run deliberately as a robustness check;
    - do not use accidental generic results as the main evidence.
 7. Multi-station extension:
    - use selected representative fleets for Caulfield plus one more station;
    - do not run a full 35-grid unless time allows.
+
+### Paper-Facing Plot Outputs
+
+Keep diagnostic plots separate from paper-facing figures.
+
+Fleet composition:
+
+```text
+fleet_composition_tradeoff_system_vmt_co2.pdf
+fleet_composition_tradeoff_system_vmt_co2.png
+```
+
+Vehicle-type assignment:
+
+```text
+distance_bin_assignment_stacked_bar.pdf
+distance_bin_assignment_stacked_bar.png
+```
+
+Capacity sensitivity:
+
+```text
+capacity_sensitivity_vmt_co2.pdf
+capacity_sensitivity_vmt_co2.png
+```
+
+Pilot demand sensitivity:
+
+```text
+pilot_demand_sensitivity_service_fallback.pdf
+pilot_demand_sensitivity_service_fallback.png
+```
+
+### LaTeX and Figure Notation
+
+- Use `\COtwo` in manuscript text.
+- Use `CO$_2$` in Matplotlib figures.
+- Escape percent signs as `\%` in LaTeX.
 
 ---
 
@@ -1023,6 +1067,15 @@ The analyzer should extract:
 
 Cost and parking are evaluation-only and do not affect routing.
 
+Targeted runtime diagnostic:
+
+- A targeted runtime diagnostic was run for `x1.25` all-car and VMT-oriented fleets using seeds 1--5 at 600 seconds and 1200 seconds.
+- Longer runtime did not recover service toward `x1.00` levels:
+  - all-car `x1.25` service: 300-second main mean 88.3%, 600-second diagnostic 87.8%, 1200-second diagnostic 87.9%;
+  - VMT-oriented `x1.25` service: 300-second main mean 92.0%, 600-second diagnostic 92.1%, 1200-second diagnostic 91.8%.
+- This diagnostic suggests the high-capacity service pattern is not primarily a 300-second runtime artifact.
+- It is a targeted diagnostic only, not a full replacement for the 15-seed main sweep.
+
 Current state:
 
 - Generic-input run completed in `experiments/results/capacity_sensitivity_representative_generic` and retained as a robustness/diagnostic result.
@@ -1056,7 +1109,7 @@ Default near-112-seat pilot fleets:
 
 | Pilot fleet | Counts | Seats |
 |---|---|---:|
-| balanced_pilot | 28 scooters, 14 mopeds, 7 cars, 3 minibuses | 104 |
+| balanced_pilot | 28 scooters, 14 mopeds, 7 cars, 3 minibuses | 108 |
 | vmt_oriented_pilot | 28 scooters, 0 mopeds, 0 cars, 10 minibuses | 108 |
 | low_emission_pilot | 28 scooters, 42 mopeds, 0 cars, 0 minibuses | 112 |
 | all_car_pilot | 0 scooters, 0 mopeds, 28 cars, 0 minibuses | 112 |
@@ -1067,7 +1120,16 @@ An optional diagnostic `all_minibus_pilot` can be enabled with `INCLUDE_ALL_MINI
 0 scooters, 0 mopeds, 0 cars, 14 minibuses = 112 seats
 ```
 
-Pilot fleets should be described as "near-112-seat pilot fleets" or a "112-seat pilot reference", not as all exactly 112 seats.
+`all_minibus_pilot` is not used in the current paper-facing pilot analysis unless explicitly enabled for diagnostics. Paper-facing pilot analysis uses only:
+
+```text
+all_car_pilot
+balanced_pilot
+vmt_oriented_pilot
+low_emission_pilot
+```
+
+Pilot fleets should be described as "near-112-seat pilot fleets", "approximately half-scale pilot fleets", or a "112-seat pilot reference", not as exactly equal-seat fleets.
 
 Current state: completed under residential-origin demand with the near-112-seat pilot fleets listed above.
 

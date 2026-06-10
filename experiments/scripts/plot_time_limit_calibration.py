@@ -236,7 +236,7 @@ def fig_manuscript_compact(df, out_dir):
         "co2":     "#FF9800",
     }
 
-    fig, ax1 = plt.subplots(figsize=(5.5, 3.5))
+    fig, ax1 = plt.subplots(figsize=(4.2, 3.2))
     
     x = np.arange(len(df))
     x_labels = [str(int(ti)) for ti in df["time_limit_s"].to_numpy()]
@@ -245,24 +245,25 @@ def fig_manuscript_compact(df, out_dir):
     service_mean = df["service_rate_mean"].to_numpy()
     service_std = df["service_rate_std"].fillna(0).to_numpy()
     
-    line1 = ax1.plot(x, service_mean, marker="o", ms=4.5, lw=2.0,
+    line1 = ax1.plot(x, service_mean, marker="o", ms=5.5, lw=2.3,
                      color=COLORS["service"], label="Service rate",
                      zorder=3)
     ax1.fill_between(x, service_mean - service_std, service_mean + service_std,
                      alpha=0.15, color=COLORS["service"], zorder=2)
     
-    ax1.set_xlabel("Solver time limit (s)", fontsize=11)
-    ax1.set_ylabel("Service rate (%)", fontsize=11, color=COLORS["service"])
-    ax1.tick_params(axis="y", labelcolor=COLORS["service"])
+    ax1.set_xlabel("Solver time limit (s)", fontsize=13)
+    ax1.set_ylabel("Service rate (%)", fontsize=13, color=COLORS["service"])
+    ax1.tick_params(axis="y", labelcolor=COLORS["service"], labelsize=11)
+    ax1.tick_params(axis="x", labelsize=11)
     ax1.set_ylim(max(0, min(service_mean) - 5), min(101, max(service_mean) + 1))
     ax1.set_xticks(x)
-    ax1.set_xticklabels(x_labels, fontsize=9)
+    ax1.set_xticklabels(x_labels, fontsize=11)
     ax1.grid(axis="y", ls="--", alpha=0.3)
     ax1.grid(axis="x", ls=":", alpha=0.15)
     ax1.yaxis.set_minor_locator(AutoMinorLocator())
     
     # Add horizontal line at 100% for service rate
-    ax1.axhline(100, color=COLORS["service"], ls="--", lw=0.8, alpha=0.3, zorder=1)
+    ax1.axhline(100, color=COLORS["service"], ls="--", lw=1.0, alpha=0.3, zorder=1)
     
     # RIGHT AXIS: System VMT and CO₂ reduction
     ax2 = ax1.twinx()
@@ -273,29 +274,30 @@ def fig_manuscript_compact(df, out_dir):
     co2_mean = df["co2_red_mean"].to_numpy()
     co2_std = df["co2_red_std"].fillna(0).to_numpy()
     
-    line2 = ax2.plot(x, vmt_mean, marker="s", ms=4.0, lw=2.0,
+    line2 = ax2.plot(x, vmt_mean, marker="s", ms=5.5, lw=2.3,
                      color=COLORS["vmt"], label="System VMT reduction",
                      zorder=3)
     ax2.fill_between(x, vmt_mean - vmt_std, vmt_mean + vmt_std,
                      alpha=0.15, color=COLORS["vmt"], zorder=2)
 
-    line3 = ax2.plot(x, co2_mean, marker="^", ms=4.0, lw=2.0,
-                     color=COLORS["co2"], label="System CO$_2$ reduction",
+    line3 = ax2.plot(x, co2_mean, marker="^", ms=5.5, lw=2.3,
+                     color=COLORS["co2"], label="System CO2 reduction",
                      zorder=3)
     ax2.fill_between(x, co2_mean - co2_std, co2_mean + co2_std,
                      alpha=0.15, color=COLORS["co2"], zorder=2)
 
-    ax2.set_ylabel("System reduction (%)", fontsize=11)
+    ax2.set_ylabel("System reduction (%)", fontsize=13)
+    ax2.tick_params(axis="y", labelsize=11)
     ax2.yaxis.set_minor_locator(AutoMinorLocator())
     ax2.grid(axis="y", ls="--", alpha=0.1)
     
     # Add horizontal line at 0 for reference
-    ax2.axhline(0, color="grey", ls="--", lw=0.8, alpha=0.3, zorder=1)
+    ax2.axhline(0, color="grey", ls="--", lw=1.0, alpha=0.3, zorder=1)
     
     # Combined legend
     lines = line1 + line2 + line3
     labels = [l.get_label() for l in lines]
-    ax1.legend(lines, labels, loc="lower right", fontsize=8,
+    ax1.legend(lines, labels, loc="lower right", fontsize=10,
               framealpha=0.85, edgecolor="grey", fancybox=False)
     
     plt.tight_layout()

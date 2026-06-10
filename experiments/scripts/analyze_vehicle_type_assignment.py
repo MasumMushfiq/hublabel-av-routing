@@ -6,11 +6,18 @@ Analyze vehicle-type contribution and distance-based assignment for three
 representative heterogeneous fleets using existing PyVRP experiment outputs.
 Does NOT rerun any optimization.
 
-Representative fleets (224 seats, 15 seeds, 180 s solver, fixed 20-min slots,
-0-min buffer, no distance-band penalty, raw-distance objective):
-  balanced      S25/M25/C25/MB25  →  comp_S25_M25_C25_MB25
-  vmt_oriented  S25/M25/C0/MB50   →  comp_S25_M25_C0_MB50
-  low_emission  S25/M50/C0/MB25   →  comp_S25_M50_C0_MB25
+Representative heterogeneous fleets from the completed residential-origin
+Melton 224-seat fleet-composition grid (35 compositions, 15 seeds, 300 s
+solver runtime, fixed 20-minute train-aligned slots, zero pre-departure
+margin, no distance-band penalty, all-electric vehicle model):
+  Balanced      S25/M25/C25/MB25  ->  comp_S25_M25_C25_MB25
+  VMT-oriented  S25/M0/C0/MB75    ->  comp_S25_M0_C0_MB75
+  Low-emission  S25/M75/C0/MB0    ->  comp_S25_M75_C0_MB0
+
+This mechanism analysis explains how AV vehicle types contribute to served
+demand, adjusted AV-only VMT, pooling efficiency, and distance-based assignment.
+System-level VMT reduction, system CO2 reduction, service rate, and fallback
+private cars are reported in the grid and representative comparison sections.
 
 Usage (from hub_label/ root):
   python3 experiments/scripts/analyze_vehicle_type_assignment.py \\
@@ -39,19 +46,30 @@ matplotlib.rcParams["ps.fonttype"] = 42
 
 FLEETS = {
     "balanced":     "comp_S25_M25_C25_MB25",
-    "vmt_oriented": "comp_S25_M25_C0_MB50",
-    "low_emission": "comp_S25_M50_C0_MB25",
+    "vmt_oriented": "comp_S25_M0_C0_MB75",
+    "low_emission": "comp_S25_M75_C0_MB0",
 }
 
 FLEET_LABELS = {
-    "balanced":     "Balanced\n(S25/M25/C25/MB25)",
-    "vmt_oriented": "VMT-Oriented\n(S25/M25/C0/MB50)",
-    "low_emission": "Low-Emission\n(S25/M50/C0/MB25)",
+    "balanced":     "Balanced",
+    "vmt_oriented": "VMT-oriented",
+    "low_emission": "Low-emission",
+}
+
+FLEET_COMPOSITION_LABELS = {
+    "balanced":     "S25/M25/C25/MB25",
+    "vmt_oriented": "S25/M0/C0/MB75",
+    "low_emission": "S25/M75/C0/MB0",
 }
 
 VEHICLE_TYPES = ["Scooter", "Moped", "Car", "Minibus"]
-# Matplotlib default color cycle: C0–C3
-VT_COLORS = {vt: f"C{i}" for i, vt in enumerate(VEHICLE_TYPES)}
+# Okabe-Ito qualitative palette, chosen to avoid red-green confusion.
+VT_COLORS = {
+    "Scooter": "#0072B2",  # blue
+    "Moped":   "#009E73",  # bluish green
+    "Car":     "#E69F00",  # orange
+    "Minibus": "#CC79A7",  # reddish purple
+}
 
 # ─── Publication style ────────────────────────────────────────────────────────
 
@@ -100,7 +118,7 @@ _DIST_KM_CANDS = [
 _IVT_CANDS   = ["in_vehicle_time_min", "ivt_min", "ride_time_min"]
 _ADIST_CANDS = ["in_vehicle_distance_km", "route_distance_km", "assigned_distance_km"]
 _DET_CANDS   = ["detour_ratio", "detour"]
-_SERVED_VALS = {"assigned", "served", "completed"}
+_ASSIGNED_STATUS = "assigned"
 
 
 def _find_col(df, candidates, label, src=""):
@@ -152,17 +170,19 @@ def parse_run(run_dir):
     if vt_col is None:
         return None, metrics
 
-    # Status filter: keep only served/assigned rows
+    # Status filter: keep only commuters served on time by AV after late-arrival
+    # pruning. PRUNED_LATE and UNSERVED commuters are fallback private-car users
+    # in the final system evaluation, not AV fleet vehicle-type assignments.
     status_col = _find_col(df, _STATUS_CANDS, "status", "")
     if status_col:
-        mask = df[status_col].astype(str).str.strip().str.lower().isin(_SERVED_VALS)
-        if mask.sum() > 0:
-            df = df[mask].copy()
-        else:
-            warnings.warn(
-                f"[{src}] Status filter matched 0 rows; treating all rows as served."
-            )
-    # If no status column, rows with a valid vehicle assignment are treated as served.
+        mask = df[status_col].astype(str).str.strip().str.lower().eq(_ASSIGNED_STATUS)
+        df = df[mask].copy()
+        if len(df) == 0:
+            warnings.warn(f"[{src}] Status filter matched 0 ASSIGNED rows.")
+    else:
+        warnings.warn(
+            f"[{src}] No status column found; cannot verify ASSIGNED-only filtering."
+        )
 
     # Direct distance → km
     dist_km_col = _find_col(df, _DIST_KM_CANDS, "direct distance (km)", "")
@@ -200,11 +220,16 @@ def contribution_rows_for_seed(fleet, seed, df, metrics):
     """
     One row per vehicle type for this (fleet, seed).
 
-    VMT data comes from metrics.json per_vehicle_type because per-commuter
-    actual route distances are not recorded in assignments.csv.
+    VMT data comes from metrics.json per_vehicle_type because per-commuter actual
+    route distances are not recorded in assignments.csv. In the current schema,
+    per_vehicle_type[*].vmt_km and adjusted_av_total_vmt_km are adjusted AV-only
+    metrics after late-arrival pruning; fallback private cars are excluded.
     """
     total_served = len(df)
-    total_vmt    = (metrics or {}).get("total_vmt_km", np.nan)
+    total_vmt    = (metrics or {}).get(
+        "adjusted_av_total_vmt_km",
+        (metrics or {}).get("total_vmt_km", np.nan),
+    )
     pvt_metrics  = (metrics or {}).get("per_vehicle_type", {})
     rows = []
 
@@ -232,18 +257,35 @@ def contribution_rows_for_seed(fleet, seed, df, metrics):
         vmt = pvt.get("vmt_km", np.nan)
         if pd.isna(vmt):
             vmt = np.nan
+        mean_direct_distance_km = dist.mean() if len(dist) > 0 else np.nan
+        av_km_per_served = vmt / n if n > 0 and not pd.isna(vmt) else np.nan
+        av_km_per_direct = (
+            av_km_per_served / mean_direct_distance_km
+            if (
+                not pd.isna(av_km_per_served)
+                and not pd.isna(mean_direct_distance_km)
+                and mean_direct_distance_km > 0
+            )
+            else np.nan
+        )
 
         rows.append({
             "fleet":                     fleet,
+            "fleet_label":               FLEET_LABELS[fleet],
+            "fleet_composition":         FLEET_COMPOSITION_LABELS[fleet],
             "seed":                      seed,
             "vehicle_type":              vt,
             "served_commuters":          n,
             "served_share_percent":      n / total_served * 100
                                          if total_served > 0 else np.nan,
             "vehicle_vmt_km":            vmt,
+            "total_adjusted_av_vmt_km":  total_vmt,
             "vmt_share_percent":         vmt / total_vmt * 100
                                          if (not pd.isna(vmt) and total_vmt) else np.nan,
-            "mean_direct_distance_km":   dist.mean()         if len(dist) > 0 else np.nan,
+            "vmt_source":                "metrics.json per_vehicle_type.vmt_km (adjusted AV-only)",
+            "av_km_per_served_commuter": av_km_per_served,
+            "av_km_per_direct_km":       av_km_per_direct,
+            "mean_direct_distance_km":   mean_direct_distance_km,
             "median_direct_distance_km": dist.median()       if len(dist) > 0 else np.nan,
             "p25_direct_distance_km":    dist.quantile(0.25) if len(dist) > 0 else np.nan,
             "p75_direct_distance_km":    dist.quantile(0.75) if len(dist) > 0 else np.nan,
@@ -318,12 +360,20 @@ def load_all_fleets(results_root, bin_edges, bin_labels):
     raw_frames       = []
     n_loaded         = {}
 
+    print("\nRepresentative heterogeneous fleets:")
+    for fleet, folder in FLEETS.items():
+        print(
+            f"  {FLEET_LABELS[fleet]:<12} {FLEET_COMPOSITION_LABELS[fleet]:<16} "
+            f"-> {folder}"
+        )
+
     for fleet, folder in FLEETS.items():
         fleet_dir = results_root / folder
         if not fleet_dir.is_dir():
             warnings.warn(f"Fleet directory not found: {fleet_dir}")
             n_loaded[fleet] = 0
             continue
+        print(f"\nFound {FLEET_LABELS[fleet]} fleet: {fleet_dir}")
 
         run_dirs = sorted(
             [d for d in fleet_dir.iterdir()
@@ -354,7 +404,7 @@ def load_all_fleets(results_root, bin_edges, bin_labels):
             ok += 1
 
         n_loaded[fleet] = ok
-        print(f"  {fleet:<14}: {ok}/{len(run_dirs)} runs loaded")
+        print(f"  {FLEET_LABELS[fleet]:<12}: {ok}/{len(run_dirs)} seed runs processed")
 
     df_contrib = pd.DataFrame(contrib_rows_all)
     df_distbin = pd.DataFrame(distbin_rows_all)
@@ -376,6 +426,82 @@ def summarize(df, group_cols):
     out  = df.groupby(group_cols).agg(agg)
     out.columns = ["_".join(c) for c in out.columns]
     return out.reset_index()
+
+
+# ─── LaTeX table ──────────────────────────────────────────────────────────────
+
+def _latex_escape(text):
+    """Escape a small amount of plain text for LaTeX table cells."""
+    return (
+        str(text)
+        .replace("\\", r"\textbackslash{}")
+        .replace("&", r"\&")
+        .replace("%", r"\%")
+        .replace("_", r"\_")
+    )
+
+
+def write_latex_contribution_table(contrib_summary, out_path):
+    """
+    Compact paper table for AV-only vehicle-type contribution.
+
+    Percentages are cross-seed means. VMT share is computed from adjusted
+    AV-only per-vehicle-type VMT, excluding fallback private-car VMT. Inactive
+    vehicle-type rows are omitted from the paper table but remain in the CSV.
+    """
+    active_threshold = 1e-9
+    rows = []
+    for fleet in FLEETS:
+        for vt in VEHICLE_TYPES:
+            sub = contrib_summary[
+                (contrib_summary["fleet"] == fleet)
+                & (contrib_summary["vehicle_type"] == vt)
+            ]
+            if sub.empty:
+                continue
+            r = sub.iloc[0]
+            served_pct = r.get("served_share_percent_mean", np.nan)
+            if pd.isna(served_pct) or served_pct <= active_threshold:
+                continue
+            rows.append(
+                (
+                    FLEET_LABELS[fleet],
+                    vt,
+                    served_pct,
+                    r.get("vmt_share_percent_mean", np.nan),
+                    r.get("av_km_per_served_commuter_mean", np.nan),
+                    r.get("mean_direct_distance_km_mean", np.nan),
+                )
+            )
+
+    def fmt_pct(v):
+        return "--" if pd.isna(v) else f"{v:.1f}\\%"
+
+    def fmt_km(v):
+        return "--" if pd.isna(v) else f"{v:.2f}"
+
+    lines = [
+        r"\resizebox{\columnwidth}{!}{%",
+        r"\begin{tabular}{llrrrr}",
+        r"\toprule",
+        r"Fleet & Type & Served \% & AV VMT \% & AV-km/served & Mean dist. (km) \\",
+        r"\midrule",
+    ]
+    last_fleet = None
+    for fleet_label, vt, served_pct, vmt_pct, av_km_per_served, mean_dist in rows:
+        fleet_cell = _latex_escape(fleet_label) if fleet_label != last_fleet else ""
+        lines.append(
+            f"{fleet_cell} & {_latex_escape(vt)} & {fmt_pct(served_pct)} & "
+            f"{fmt_pct(vmt_pct)} & {fmt_km(av_km_per_served)} & "
+            f"{fmt_km(mean_dist)} \\\\"
+        )
+        last_fleet = fleet_label
+    lines.extend([r"\bottomrule", r"\end{tabular}%", r"}"])
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n")
+    print(f"Saved: {out_path}")
 
 
 # ─── Figure 1: direct distance boxplot ───────────────────────────────────────
@@ -446,7 +572,7 @@ def fig_distbin_stacked_bar(df_distbin, bin_labels, fig_dir):
     fleet_names = list(FLEETS.keys())
     fig, axes = plt.subplots(
         1, len(fleet_names),
-        figsize=(4.5 * len(fleet_names), 5),
+        figsize=(4.25 * len(fleet_names), 4.8),
         sharey=True,
     )
     if len(fleet_names) == 1:
@@ -480,23 +606,23 @@ def fig_distbin_stacked_bar(df_distbin, bin_labels, fig_dir):
                 edgecolor="white", linewidth=0.4,
             )
             for i, (v, b) in enumerate(zip(vals, bottom)):
-                if v >= 5:
+                if v >= 7:
                     ax.text(
                         i, b + v / 2, f"{v:.0f}%",
                         ha="center", va="center",
-                        fontsize=10, color="white", fontweight="bold",
+                        fontsize=9, color="white", fontweight="bold",
                     )
             bottom += vals
 
         ax.set_xticks(x)
         ax.set_xticklabels(list(pivot.index), rotation=30, ha="right")
         ax.set_title(FLEET_LABELS[fleet])
-        ax.set_xlabel("Direct distance bin")
         ax.set_ylim(0, 108)
         ax.grid(axis="y", ls="--", alpha=0.35)
         ax.yaxis.set_minor_locator(AutoMinorLocator())
 
     axes[0].set_ylabel("Share of served commuters (%)")
+    fig.supxlabel("Direct origin-to-station distance bin", y=0.17, fontsize=15)
 
     handles = [
         plt.Rectangle(
@@ -511,9 +637,9 @@ def fig_distbin_stacked_bar(df_distbin, bin_labels, fig_dir):
         loc="lower center",
         ncol=4,
         frameon=False,
-        bbox_to_anchor=(0.5, -0.07),
+        bbox_to_anchor=(0.5, 0.01),
     )
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.07, right=0.99, top=0.88, bottom=0.34, wspace=0.08)
     savefig(fig, fig_dir / "distance_bin_assignment_stacked_bar")
 
 
@@ -547,6 +673,23 @@ def parse_args():
     return p.parse_args()
 
 
+def print_mechanism_interpretation():
+    """Print paper-facing interpretation guidance for the mechanism section."""
+    print("\nMechanism interpretation:")
+    print("  Balanced shows the clearest mixed vehicle-type division of labor.")
+    print("  VMT-oriented is minibus-dominant across distance bins.")
+    print("  Low-emission is moped-dominant across distance bins.")
+    print("  Scooters remain a limited/niche contributor despite their 25% seat share.")
+    print(
+        "  AV-km per served commuter captures pooling efficiency and uses "
+        "adjusted AV-only VMT."
+    )
+    print(
+        "  Interpret distance stratification mainly for the balanced fleet; "
+        "the specialized fleets are dominated by their workhorse vehicle type."
+    )
+
+
 def main():
     args = parse_args()
 
@@ -567,6 +710,14 @@ def main():
     print(f"  Output dir   : {out_dir}")
     print(f"  Figure dir   : {fig_dir}")
     print(f"  Distance bins: {bin_labels}")
+    print(
+        "  Assignment filter: status == ASSIGNED only "
+        "(PRUNED_LATE/UNSERVED are fallback private cars)"
+    )
+    print(
+        "  VMT contribution: metrics.json per_vehicle_type.vmt_km divided by "
+        "adjusted_av_total_vmt_km (adjusted AV-only)"
+    )
     print("=" * 60)
 
     df_contrib, df_distbin, df_raw, n_loaded = load_all_fleets(
@@ -599,6 +750,11 @@ def main():
     contrib_summary.to_csv(p, index=False)
     print(f"Saved: {p}")
 
+    write_latex_contribution_table(
+        contrib_summary,
+        out_dir / "vehicle_type_contribution_table.tex",
+    )
+
     if not df_distbin.empty:
         bin_summary = summarize(df_distbin, ["fleet", "distance_bin", "vehicle_type"])
         p = out_dir / "distance_bin_assignment_summary.csv"
@@ -621,7 +777,11 @@ def main():
     print("\n" + "=" * 60)
     print("Runs loaded per fleet:")
     for fleet, n in n_loaded.items():
-        print(f"  {fleet:<16}: {n} run(s)")
+        print(f"  {FLEET_LABELS[fleet]:<16}: {n} seed run(s)")
+    print("\nVMT contribution source:")
+    print("  adjusted AV-only per-vehicle-type metrics from metrics.json")
+    print("  fallback private-car VMT is excluded from vehicle-type shares")
+    print_mechanism_interpretation()
     print(f"\nCSV outputs : {out_dir}/")
     print(f"Figures     : {fig_dir}/")
     print("=" * 60)

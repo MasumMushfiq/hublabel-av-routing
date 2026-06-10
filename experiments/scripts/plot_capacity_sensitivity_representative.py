@@ -1,28 +1,27 @@
 #!/usr/bin/env python3
 """
-Aggregate and plot representative-fleet capacity sensitivity results.
+Aggregate and plot residential-origin representative-fleet capacity sensitivity.
 
-Expected result layout from the runner:
+This script reads existing results only. It does not rerun optimization.
 
-experiments/results/capacity_sensitivity_representative/
-  balanced/
+Expected result layout:
+
+experiments/results/capacity_sensitivity_representative_residential/
+  all_car/
     x0.90/
       seed_1/
+        metrics.json
         comparison.json
-      seed_2/
-        comparison.json
+        config.json
       ...
+  balanced/
   vmt_oriented/
-    x1.00/
-      seed_1/
-        comparison.json
   low_emission/
-    x1.25/
-      seed_15/
-        comparison.json
 
-The script is intentionally tolerant to different comparison.json key names.
-If your simulator uses different metric names, update extract_metrics().
+The main paper-facing capacity figure uses explicit system-level VMT and CO2
+reductions. Service rate and fallback private cars remain available in summary
+tables and individual diagnostic plots. System metrics include AV service plus
+fallback private-car trips.
 """
 
 from __future__ import annotations
@@ -30,47 +29,69 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
-from plot_pub_style import setup_pub_style as apply_pub_style
-from matplotlib.lines import Line2D
 import pandas as pd
+from matplotlib.lines import Line2D
+from plot_pub_style import setup_pub_style as apply_pub_style
 
 
-FLEET_ORDER = ["balanced", "vmt_oriented", "low_emission"]
+FLEET_ORDER = ["all_car", "balanced", "vmt_oriented", "low_emission"]
 FLEET_LABELS = {
+    "all_car": "All-car",
     "balanced": "Balanced",
     "vmt_oriented": "VMT-oriented",
     "low_emission": "Low-emission",
 }
+FLEET_MARKERS = {
+    "all_car": "o",
+    "balanced": "s",
+    "vmt_oriented": "^",
+    "low_emission": "D",
+}
+FLEET_COLORS = {
+    "all_car": "#0072B2",
+    "balanced": "#E69F00",
+    "vmt_oriented": "#56B4E9",
+    "low_emission": "#CC79A7",
+}
 
 SCALE_ORDER = ["x0.90", "x1.00", "x1.10", "x1.25"]
 
-SEATS = {
-    ("balanced", "x0.90"): 200,
-    ("balanced", "x1.00"): 224,
-    ("balanced", "x1.10"): 247,
-    ("balanced", "x1.25"): 280,
+PRIMARY_METRICS = [
+    "service_rate",
+    "fallback_private_cars",
+    "system_vmt_reduction_pct",
+    "system_co2_reduction_pct",
+]
+OPTIONAL_METRICS = [
+    "avg_in_vehicle_time_min",
+    "avg_passengers_per_trip",
+]
+METADATA_METRICS = [
+    "total_seats",
+    "total_fleet_vehicles",
+]
+SUMMARY_METRICS = PRIMARY_METRICS + METADATA_METRICS + OPTIONAL_METRICS
+UNCERTAINTY_LABEL = "SEM"
 
-    ("vmt_oriented", "x0.90"): 204,
-    ("vmt_oriented", "x1.00"): 224,
-    ("vmt_oriented", "x1.10"): 244,
-    ("vmt_oriented", "x1.25"): 284,
 
-    ("low_emission", "x0.90"): 198,
-    ("low_emission", "x1.00"): 224,
-    ("low_emission", "x1.10"): 250,
-    ("low_emission", "x1.25"): 282,
-}
+def configure_matplotlib() -> None:
+    apply_pub_style()
 
 
-def find_value(data: dict[str, Any], candidates: list[str], default: float | None = None) -> float | None:
-    """
-    Search nested dictionaries using dot-separated candidate keys.
-    Returns the first numeric value found.
-    """
+def read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def find_value(data: dict[str, Any], candidates: list[str]) -> tuple[float | None, str | None]:
+    """Search nested dictionaries using dot-separated candidate keys."""
     for key in candidates:
         cur: Any = data
         ok = True
@@ -80,21 +101,15 @@ def find_value(data: dict[str, Any], candidates: list[str], default: float | Non
             else:
                 ok = False
                 break
-
         if ok and cur is not None:
             try:
-                return float(cur)
+                return float(cur), key
             except (TypeError, ValueError):
                 pass
-
-    return default
+    return None, None
 
 
 def normalize_percent(value: float | None) -> float | None:
-    """
-    Some scripts store percentages as 0.975, others as 97.5.
-    Convert fractions to percentages.
-    """
     if value is None:
         return None
     if -1.0 <= value <= 1.0:
@@ -102,140 +117,186 @@ def normalize_percent(value: float | None) -> float | None:
     return value
 
 
-def extract_metrics(path: Path) -> dict[str, float | None]:
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+def first_from_sources(
+    metrics_data: dict[str, Any],
+    comparison_data: dict[str, Any],
+    candidates: list[str],
+) -> tuple[float | None, str]:
+    value, key = find_value(metrics_data, candidates)
+    if value is not None:
+        return value, f"metrics.json:{key}"
 
-    metrics_path = path.with_name("metrics.json")
-    metrics_data: dict[str, Any] = {}
-    if metrics_path.exists():
-        with metrics_path.open("r", encoding="utf-8") as f:
-            metrics_data = json.load(f)
+    value, key = find_value(comparison_data, candidates)
+    if value is not None:
+        return value, f"comparison.json:{key}"
 
-    def find_in_outputs(candidates: list[str], default: float | None = None) -> float | None:
-        if metrics_data:
-            value = find_value(metrics_data, candidates)
-            if value is not None:
-                return value
-        return find_value(data, candidates, default)
+    return None, "missing"
 
-    served_pct = normalize_percent(find_value(data, [
-        "service_rate_pct",
-        "service_rate",
-        "served_rate",
-        "served_pct",
-        "av.service_rate",
-        "av.served_rate",
-        "av.served_pct",
-        "metrics.service_rate",
-        "metrics.served_rate",
-        "metrics.served_pct",
-    ]))
 
-    on_time_pct = normalize_percent(find_value(data, [
-        "on_time_rate_pct",
-        "on_time_rate",
-        "av.on_time_rate",
-        "metrics.on_time_rate",
-    ]))
+def system_reduction_from_sources(
+    metrics_data: dict[str, Any],
+    comparison_data: dict[str, Any],
+    reduction_key: str,
+    change_key: str,
+) -> tuple[float | None, str]:
+    value, source = first_from_sources(metrics_data, comparison_data, [reduction_key])
+    if value is not None:
+        return normalize_percent(value), source
 
-    eff_on_time_pct = normalize_percent(find_in_outputs([
-        "effective_on_time_service_rate",
-        "effective_on_time_rate",
-        "effective_on_time_pct",
-        "eff_on_time_rate",
-        "eff_on_time_pct",
-        "av.effective_on_time_rate",
-        "av.effective_on_time_pct",
-        "metrics.effective_on_time_rate",
-        "metrics.effective_on_time_pct",
-    ]))
-    if eff_on_time_pct is None and served_pct is not None and on_time_pct is not None:
-        # comparison.json stores on_time_rate_pct over served riders; convert it
-        # to the stricter total-demand effective on-time service rate.
-        eff_on_time_pct = served_pct * on_time_pct / 100.0
+    change, source = first_from_sources(metrics_data, comparison_data, [change_key])
+    if change is not None:
+        return normalize_percent(-change), f"{source} (negated)"
 
-    _vmt_raw = find_value(data, [
-        "vmt_reduction",
-        "vmt_reduction_pct",
-        "vmt_reduction_percent",
-        "comparison.vmt_reduction",
-        "comparison.vmt_reduction_pct",
-        "metrics.vmt_reduction",
-        "metrics.vmt_reduction_pct",
-    ])
-    if _vmt_raw is None:
-        # vmt_change_pct is stored as a negative number (e.g. -35.2 = 35% reduction)
-        _vmt_change = find_value(data, ["vmt_change_pct", "changes_percent.vmt"])
-        _vmt_raw = -_vmt_change if _vmt_change is not None else None
-    vmt_reduction_pct = normalize_percent(_vmt_raw)
+    return None, "missing"
 
-    _co2_raw = find_value(data, [
-        "co2_reduction",
-        "co2_reduction_pct",
-        "co2_reduction_percent",
-        "comparison.co2_reduction",
-        "comparison.co2_reduction_pct",
-        "metrics.co2_reduction",
-        "metrics.co2_reduction_pct",
-    ])
-    if _co2_raw is None:
-        _co2_change = find_value(data, ["co2_change_pct", "changes_percent.co2"])
-        _co2_raw = -_co2_change if _co2_change is not None else None
-    co2_reduction_pct = normalize_percent(_co2_raw)
 
-    late_count = find_value(data, [
-        "late_deliveries",
-        "late_count",
-        "num_late",
-        "late_arrivals",
-        "av.late_count",
-        "metrics.late_count",
-        "metrics.late_arrivals",
-    ])
+def extract_metrics(run_dir: Path) -> tuple[dict[str, float | None], dict[str, str]]:
+    metrics_data = read_json(run_dir / "metrics.json")
+    comparison_data = read_json(run_dir / "comparison.json")
+    sources: dict[str, str] = {}
 
-    avg_pax_per_trip = find_value(data, [
-        "avg_passengers_per_trip",
-        "avg_pax_per_trip",
-        "average_passengers_per_trip",
-        "pax_per_trip",
-        "av.avg_pax_per_trip",
-        "metrics.avg_pax_per_trip",
-    ])
+    service_rate, sources["service_rate"] = first_from_sources(
+        metrics_data,
+        comparison_data,
+        [
+            "service_rate",
+            "service_rate_pct",
+            "metrics.service_rate",
+            "metrics.service_rate_pct",
+        ],
+    )
+    service_rate = normalize_percent(service_rate)
 
-    avg_ivt_min = find_value(data, [
-        "avg_in_vehicle_time_min",
-        "avg_ivt_min",
-        "average_in_vehicle_time_min",
-        "av.avg_in_vehicle_time_min",
-        "metrics.avg_in_vehicle_time_min",
-    ])
+    fallback_private_cars, sources["fallback_private_cars"] = first_from_sources(
+        metrics_data,
+        comparison_data,
+        [
+            "fallback_private_cars",
+            "metrics.fallback_private_cars",
+        ],
+    )
+    if fallback_private_cars is None:
+        late, late_source = first_from_sources(metrics_data, comparison_data, ["late_deliveries"])
+        unserved, unserved_source = first_from_sources(
+            metrics_data, comparison_data, ["unserved_commuters"]
+        )
+        if late is not None or unserved is not None:
+            fallback_private_cars = (late or 0.0) + (unserved or 0.0)
+            sources["fallback_private_cars"] = (
+                f"derived from {late_source} + {unserved_source}"
+            )
+
+    system_vmt_reduction_pct, sources["system_vmt_reduction_pct"] = system_reduction_from_sources(
+        metrics_data,
+        comparison_data,
+        "system_vmt_reduction_pct",
+        "system_vmt_change_pct",
+    )
+    system_co2_reduction_pct, sources["system_co2_reduction_pct"] = system_reduction_from_sources(
+        metrics_data,
+        comparison_data,
+        "system_co2_reduction_pct",
+        "system_co2_change_pct",
+    )
+
+    avg_in_vehicle_time_min, sources["avg_in_vehicle_time_min"] = first_from_sources(
+        metrics_data,
+        comparison_data,
+        ["avg_in_vehicle_time_min", "avg_ivt_min"],
+    )
+    avg_passengers_per_trip, sources["avg_passengers_per_trip"] = first_from_sources(
+        metrics_data,
+        comparison_data,
+        ["avg_passengers_per_trip", "avg_pax_per_trip", "pax_per_trip"],
+    )
+
+    return (
+        {
+            "service_rate": service_rate,
+            "fallback_private_cars": fallback_private_cars,
+            "system_vmt_reduction_pct": system_vmt_reduction_pct,
+            "system_co2_reduction_pct": system_co2_reduction_pct,
+            "avg_in_vehicle_time_min": avg_in_vehicle_time_min,
+            "avg_passengers_per_trip": avg_passengers_per_trip,
+        },
+        sources,
+    )
+
+
+def fleet_metadata_from_config(config: dict[str, Any]) -> dict[str, float | None]:
+    capacity_meta = config.get("capacity_metadata", {})
+    fleet = config.get("fleet", {})
+    vehicle_types = fleet.get("vehicle_types", [])
+
+    total_seats = capacity_meta.get("total_fleet_seats")
+    if total_seats is None and isinstance(vehicle_types, list):
+        total_seats = 0
+        found_vehicle = False
+        for vehicle_type in vehicle_types:
+            try:
+                total_seats += float(vehicle_type["fleet_size"]) * float(vehicle_type["capacity"])
+                found_vehicle = True
+            except (KeyError, TypeError, ValueError):
+                pass
+        if not found_vehicle:
+            total_seats = None
+
+    count_keys = ["scooter_count", "moped_count", "car_count", "minibus_count"]
+    counts = [capacity_meta.get(key) for key in count_keys]
+    total_fleet_vehicles = None
+    if any(count is not None for count in counts):
+        total_fleet_vehicles = sum(float(count or 0.0) for count in counts)
+    elif isinstance(vehicle_types, list):
+        total_fleet_vehicles = 0
+        found_vehicle = False
+        for vehicle_type in vehicle_types:
+            try:
+                total_fleet_vehicles += float(vehicle_type["fleet_size"])
+                found_vehicle = True
+            except (KeyError, TypeError, ValueError):
+                pass
+        if not found_vehicle:
+            total_fleet_vehicles = None
 
     return {
-        "served_pct": served_pct,
-        "eff_on_time_pct": eff_on_time_pct,
-        "vmt_reduction_pct": vmt_reduction_pct,
-        "co2_reduction_pct": co2_reduction_pct,
-        "late_count": late_count,
-        "avg_pax_per_trip": avg_pax_per_trip,
-        "avg_ivt_min": avg_ivt_min,
+        "total_seats": float(total_seats) if total_seats is not None else None,
+        "total_fleet_vehicles": (
+            float(total_fleet_vehicles) if total_fleet_vehicles is not None else None
+        ),
     }
 
 
-def collect_results(results_root: Path) -> pd.DataFrame:
+def load_scale_metadata(results_root: Path, fleet: str, scale: str, seed_dir: Path) -> dict[str, float | None]:
+    config_paths = [
+        results_root / "configs" / f"{fleet}_{scale}.json",
+        seed_dir / "config.json",
+    ]
+    for config_path in config_paths:
+        config = read_json(config_path)
+        if config:
+            return fleet_metadata_from_config(config)
+    return {"total_seats": None, "total_fleet_vehicles": None}
+
+
+def collect_results(results_root: Path) -> tuple[pd.DataFrame, dict[tuple[str, str], int], dict[str, Counter]]:
     rows: list[dict[str, Any]] = []
+    run_counts: dict[tuple[str, str], int] = {}
+    source_counts: dict[str, Counter] = defaultdict(Counter)
 
     for fleet in FLEET_ORDER:
         for scale in SCALE_ORDER:
             scale_dir = results_root / fleet / scale
             if not scale_dir.exists():
                 print(f"[WARN] Missing directory: {scale_dir}")
+                run_counts[(fleet, scale)] = 0
                 continue
 
-            for seed_dir in sorted(scale_dir.glob("seed_*")):
-                comparison_path = seed_dir / "comparison.json"
-                if not comparison_path.exists():
-                    print(f"[WARN] Missing comparison.json: {seed_dir}")
+            seed_dirs = sorted(scale_dir.glob("seed_*"), key=lambda p: p.name)
+            found_for_scale = 0
+
+            for seed_dir in seed_dirs:
+                if not (seed_dir / "metrics.json").exists() and not (seed_dir / "comparison.json").exists():
+                    print(f"[WARN] Missing metrics.json and comparison.json: {seed_dir}")
                     continue
 
                 seed_str = seed_dir.name.replace("seed_", "")
@@ -244,75 +305,78 @@ def collect_results(results_root: Path) -> pd.DataFrame:
                 except ValueError:
                     seed = None
 
-                metrics = extract_metrics(comparison_path)
+                metric_values, metric_sources = extract_metrics(seed_dir)
+                metadata = load_scale_metadata(results_root, fleet, scale, seed_dir)
 
-                row = {
-                    "fleet": fleet,
-                    "fleet_label": FLEET_LABELS[fleet],
-                    "scale": scale,
-                    "scale_value": float(scale.replace("x", "")),
-                    "total_seats": SEATS.get((fleet, scale)),
-                    "seed": seed,
-                    **metrics,
-                }
-                rows.append(row)
+                for metric_name, source in metric_sources.items():
+                    source_counts[metric_name][source] += 1
+
+                rows.append(
+                    {
+                        "fleet": fleet,
+                        "fleet_label": FLEET_LABELS[fleet],
+                        "scale": scale,
+                        "scale_value": float(scale.replace("x", "")),
+                        "seed": seed,
+                        **metadata,
+                        **metric_values,
+                    }
+                )
+                found_for_scale += 1
+
+            run_counts[(fleet, scale)] = found_for_scale
 
     if not rows:
-        raise RuntimeError(f"No results found under {results_root}")
+        raise RuntimeError(f"No residential-origin capacity results found under {results_root}")
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), run_counts, source_counts
 
 
-def mean_std_summary(df: pd.DataFrame) -> pd.DataFrame:
-    metric_cols = [
-        "served_pct",
-        "eff_on_time_pct",
-        "vmt_reduction_pct",
-        "co2_reduction_pct",
-        "late_count",
-        "avg_pax_per_trip",
-        "avg_ivt_min",
-    ]
-
+def mean_std_sem_summary(df: pd.DataFrame) -> pd.DataFrame:
     grouped = df.groupby(
-        ["fleet", "fleet_label", "scale", "scale_value", "total_seats"],
+        [
+            "fleet",
+            "fleet_label",
+            "scale",
+            "scale_value",
+        ],
         as_index=False,
+        dropna=False,
     )
 
-    summary = grouped[metric_cols].agg(["mean", "std", "count"])
+    summary = grouped[SUMMARY_METRICS].agg(["mean", "std", "count"])
     summary.columns = [
-        "_".join([c for c in col if c])
+        "_".join([part for part in col if part])
         for col in summary.columns.to_flat_index()
     ]
     summary = summary.reset_index()
 
-    # More convenient aliases.
-    for metric in metric_cols:
-        summary[f"{metric}_sem"] = summary[f"{metric}_std"] / summary[f"{metric}_count"].apply(
-            lambda n: math.sqrt(n) if n and n > 0 else float("nan")
+    for metric in SUMMARY_METRICS:
+        summary[f"{metric}_sem"] = summary[f"{metric}_std"] / summary[
+            f"{metric}_count"
+        ].apply(lambda n: math.sqrt(n) if n and n > 0 else float("nan"))
+
+    ordered_columns = [
+        "fleet",
+        "fleet_label",
+        "scale",
+        "scale_value",
+    ]
+    for metric in SUMMARY_METRICS:
+        ordered_columns.extend(
+            [
+                f"{metric}_mean",
+                f"{metric}_std",
+                f"{metric}_sem",
+                f"{metric}_count",
+            ]
         )
 
+    summary = summary[ordered_columns]
+    fleet_rank = {fleet: i for i, fleet in enumerate(FLEET_ORDER)}
+    summary["_fleet_rank"] = summary["fleet"].map(fleet_rank)
+    summary = summary.sort_values(["_fleet_rank", "scale_value"]).drop(columns="_fleet_rank")
     return summary
-
-
-def configure_matplotlib() -> None:
-    apply_pub_style()
-    return
-
-    plt.rcParams.update({
-        "font.family": "Times New Roman",
-        "font.size": 10,
-        "axes.labelsize": 10,
-        "axes.titlesize": 10,
-        "legend.fontsize": 9,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "figure.dpi": 150,
-        "savefig.dpi": 300,
-        "lines.linewidth": 1.8,
-        "lines.markersize": 5,
-        "mathtext.fontset": "stix",
-    })
 
 
 def plot_metric(
@@ -321,76 +385,68 @@ def plot_metric(
     metric: str,
     ylabel: str,
     filename: str,
-    add_reference_line: bool = True,
-) -> None:
+    add_legend: bool = True,
+) -> Path:
     fig, ax = plt.subplots(figsize=(4.8, 3.2))
 
     for fleet in FLEET_ORDER:
         sub = summary[summary["fleet"] == fleet].sort_values("scale_value")
-
-        x = sub["scale_value"]
-        y = sub[f"{metric}_mean"]
-        yerr = sub[f"{metric}_sem"]
+        if sub.empty or sub[f"{metric}_mean"].isna().all():
+            continue
 
         ax.errorbar(
-            x,
-            y,
-            yerr=yerr,
-            marker="o",
+            sub["scale_value"],
+            sub[f"{metric}_mean"],
+            yerr=sub[f"{metric}_sem"],
+            marker=FLEET_MARKERS[fleet],
+            color=FLEET_COLORS[fleet],
             capsize=3,
             label=FLEET_LABELS[fleet],
         )
 
-    if add_reference_line:
-        ax.axvline(1.0, linestyle="--", linewidth=1.0)
-
+    ax.axvline(1.0, linestyle="--", linewidth=1.0, color="0.35")
     ax.set_xlabel("Capacity scale relative to 224-seat reference")
     ax.set_ylabel(ylabel)
     ax.set_xticks([0.90, 1.00, 1.10, 1.25])
     ax.set_xticklabels(["0.90", "1.00", "1.10", "1.25"])
     ax.grid(True, linestyle=":", linewidth=0.7)
-    ax.legend(frameon=False)
+    if add_legend:
+        ax.legend(frameon=False, title=f"Mean ± {UNCERTAINTY_LABEL}")
     fig.tight_layout()
 
-    fig.savefig(output_dir / filename, bbox_inches="tight")
-    fig.savefig(output_dir / filename.replace(".pdf", ".png"), bbox_inches="tight")
+    pdf_path = output_dir / filename
+    png_path = output_dir / filename.replace(".pdf", ".png")
+    fig.savefig(pdf_path, bbox_inches="tight")
+    fig.savefig(png_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
+    return pdf_path
 
 
-def plot_combined_figure(summary: pd.DataFrame, output_dir: Path) -> None:
-    metrics = [
-        ("served_pct", "Service rate (%)", "(a)", "service"),
-        ("eff_on_time_pct", "Effective on-time service (%)", "(b)", "effective_on_time"),
-        ("vmt_reduction_pct", "VMT reduction (%)", "(c)", "vmt"),
-        ("co2_reduction_pct", r"CO$_2$ reduction (%)", "(d)", "co2"),
+def plot_vmt_co2_figure(summary: pd.DataFrame, output_dir: Path) -> list[Path]:
+    panels = [
+        ("system_vmt_reduction_pct", "System VMT reduction (%)", "(a)"),
+        ("system_co2_reduction_pct", r"System CO$_2$ reduction (%)", "(b)"),
     ]
 
-    fig, axes = plt.subplots(2, 2, figsize=(7.0, 5.0), sharex=True)
-    axes_flat = axes.flat
+    fig, axes = plt.subplots(1, 2, figsize=(6.8, 3.2), sharex=True)
 
-    legend_handles = [
-        Line2D([0], [0], color=f"C{i}", marker="o", linestyle="-", linewidth=1.8)
-        for i in range(len(FLEET_ORDER))
-    ]
-    legend_labels = [FLEET_LABELS[fleet] for fleet in FLEET_ORDER]
-
-    for ax, (metric, ylabel, panel_label, _) in zip(axes_flat, metrics):
+    for ax, (metric, ylabel, panel_label) in zip(axes, panels):
         for fleet in FLEET_ORDER:
             sub = summary[summary["fleet"] == fleet].sort_values("scale_value")
-
-            x = sub["scale_value"]
-            y = sub[f"{metric}_mean"]
-            yerr = sub[f"{metric}_sem"]
+            if sub.empty or sub[f"{metric}_mean"].isna().all():
+                continue
 
             ax.errorbar(
-                x,
-                y,
-                yerr=yerr,
-                marker="o",
+                sub["scale_value"],
+                sub[f"{metric}_mean"],
+                yerr=sub[f"{metric}_sem"],
+                marker=FLEET_MARKERS[fleet],
+                color=FLEET_COLORS[fleet],
                 capsize=3,
+                linewidth=1.8,
             )
 
-        ax.axvline(1.0, linestyle="--", linewidth=1.0)
+        ax.axvline(1.0, linestyle="--", linewidth=1.0, color="0.35")
         ax.set_ylabel(ylabel)
         ax.set_xticks([0.90, 1.00, 1.10, 1.25])
         ax.set_xticklabels(["0.90", "1.00", "1.10", "1.25"])
@@ -405,76 +461,102 @@ def plot_combined_figure(summary: pd.DataFrame, output_dir: Path) -> None:
             fontweight="bold",
         )
 
-    for ax in axes[0, :]:
-        ax.set_xlabel("Capacity scale relative to 224-seat reference", labelpad=8)
-        ax.tick_params(axis="x", labelbottom=True)
-
-    for ax in axes[1, :]:
-        ax.set_xlabel("Capacity scale relative to 224-seat reference")
-
-    fig.subplots_adjust(left=0.08, right=0.98, top=0.93, bottom=0.18, wspace=0.28, hspace=0.36)
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            color=FLEET_COLORS[fleet],
+            marker=FLEET_MARKERS[fleet],
+            linestyle="-",
+            linewidth=1.8,
+        )
+        for fleet in FLEET_ORDER
+    ]
+    legend_labels = [FLEET_LABELS[fleet] for fleet in FLEET_ORDER]
     fig.legend(
         legend_handles,
         legend_labels,
         loc="lower center",
-        ncol=3,
+        ncol=4,
         frameon=False,
-        bbox_to_anchor=(0.5, 0.02),
-        handlelength=2.4,
-        columnspacing=1.8,
+        bbox_to_anchor=(0.5, 0.01),
+        title=f"Mean ± {UNCERTAINTY_LABEL} across seeds",
     )
+    fig.supxlabel("Capacity scale relative to 224-seat reference", y=0.17)
+    fig.subplots_adjust(left=0.10, right=0.99, top=0.94, bottom=0.36, wspace=0.34)
 
-    fig.savefig(output_dir / "capacity_sensitivity_combined.pdf", bbox_inches="tight")
-    fig.savefig(output_dir / "capacity_sensitivity_combined.png", bbox_inches="tight")
+    pdf_path = output_dir / "capacity_sensitivity_vmt_co2.pdf"
+    png_path = output_dir / "capacity_sensitivity_vmt_co2.png"
+    fig.savefig(pdf_path, bbox_inches="tight")
+    fig.savefig(png_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
+    return [pdf_path, png_path]
+
+
+def latex_value(value: Any, decimals: int = 1) -> str:
+    if pd.isna(value):
+        return ""
+    return f"{float(value):.{decimals}f}"
 
 
 def print_latex_table(summary: pd.DataFrame) -> None:
-    cols = [
-        "fleet_label",
-        "scale",
-        "total_seats",
-        "served_pct_mean",
-        "eff_on_time_pct_mean",
-        "late_count_mean",
-        "vmt_reduction_pct_mean",
-        "co2_reduction_pct_mean",
-        "avg_pax_per_trip_mean",
-    ]
-
-    table = summary[cols].copy()
-    table = table.sort_values(["fleet_label", "scale"])
-
-    rename = {
-        "fleet_label": "Fleet",
-        "scale": "Scale",
-        "total_seats": "Seats",
-        "served_pct_mean": "Served (\\%)",
-        "eff_on_time_pct_mean": "Eff. on-time (\\%)",
-        "late_count_mean": "Late",
-        "vmt_reduction_pct_mean": "VMT red. (\\%)",
-        "co2_reduction_pct_mean": "\\COtwo{} red. (\\%)",
-        "avg_pax_per_trip_mean": "Pax/trip",
-    }
-
-    table = table.rename(columns=rename)
-
-    float_cols = [
-        "Served (\\%)",
-        "Eff. on-time (\\%)",
-        "Late",
-        "VMT red. (\\%)",
-        "\\COtwo{} red. (\\%)",
-        "Pax/trip",
-    ]
-
-    for col in float_cols:
-        table[col] = table[col].map(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-
     print()
     print("LaTeX table draft:")
     print()
-    print(table.to_latex(index=False, escape=False))
+    headers = [
+        "Fleet",
+        "Scale",
+        "Seats",
+        "Service rate (\\%)",
+        "Fallback cars",
+        "System VMT red. (\\%)",
+        "System \\COtwo{} red. (\\%)",
+    ]
+    print(r"\begin{tabular}{l l r r r r r}")
+    print(r"\toprule")
+    print(" & ".join(headers) + r" \\")
+    print(r"\midrule")
+
+    fleet_rank = {fleet: i for i, fleet in enumerate(FLEET_ORDER)}
+    table = summary.copy()
+    table["_fleet_rank"] = table["fleet"].map(fleet_rank)
+    table = table.sort_values(["_fleet_rank", "scale_value"])
+    for _, row in table.iterrows():
+        seats = "" if pd.isna(row["total_seats_mean"]) else f"{row['total_seats_mean']:.0f}"
+        values = [
+            row["fleet_label"],
+            row["scale"],
+            seats,
+            latex_value(row["service_rate_mean"], 1),
+            latex_value(row["fallback_private_cars_mean"], 1),
+            latex_value(row["system_vmt_reduction_pct_mean"], 1),
+            latex_value(row["system_co2_reduction_pct_mean"], 1),
+        ]
+        print(" & ".join(values) + r" \\")
+
+    print(r"\bottomrule")
+    print(r"\end{tabular}")
+
+
+def print_run_counts(run_counts: dict[tuple[str, str], int]) -> None:
+    print("Runs found per fleet and scale:")
+    for fleet in FLEET_ORDER:
+        counts = [f"{scale}={run_counts.get((fleet, scale), 0)}" for scale in SCALE_ORDER]
+        print(f"  {FLEET_LABELS[fleet]}: " + ", ".join(counts))
+
+
+def print_metric_sources(source_counts: dict[str, Counter]) -> None:
+    labels = {
+        "service_rate": "service",
+        "fallback_private_cars": "fallback",
+        "system_vmt_reduction_pct": "system VMT",
+        "system_co2_reduction_pct": "system CO2",
+    }
+    print("Metric fields used:")
+    for metric in PRIMARY_METRICS:
+        counts = source_counts.get(metric, Counter())
+        details = ", ".join(f"{source} ({count})" for source, count in counts.most_common())
+        print(f"  {labels[metric]}: {details or 'missing'}")
 
 
 def main() -> None:
@@ -482,90 +564,102 @@ def main() -> None:
     parser.add_argument(
         "--results_root",
         type=Path,
-        default=Path("experiments/results/capacity_sensitivity_representative"),
+        default=Path("experiments/results/capacity_sensitivity_representative_residential"),
     )
     parser.add_argument(
         "--output_dir",
         type=Path,
-        default=Path("experiments/results/capacity_sensitivity_representative/plots"),
+        default=Path("experiments/results/capacity_sensitivity_representative_residential/plots"),
     )
-    parser.add_argument(
-        "--print_latex",
-        action="store_true",
-    )
+    parser.add_argument("--print_latex", action="store_true")
 
     args = parser.parse_args()
-
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     configure_matplotlib()
 
-    df = collect_results(args.results_root)
-    summary = mean_std_summary(df)
+    df, run_counts, source_counts = collect_results(args.results_root)
+    summary = mean_std_sem_summary(df)
 
     raw_csv = args.output_dir / "capacity_sensitivity_runs.csv"
     summary_csv = args.output_dir / "capacity_sensitivity_summary.csv"
-
     df.to_csv(raw_csv, index=False)
     summary.to_csv(summary_csv, index=False)
 
-    # Reload the summary CSV so the combined figure explicitly uses the
-    # experiment-produced summary artifact as its input.
+    # Reload the summary CSV so plots use the written summary artifact.
     summary = pd.read_csv(summary_csv)
 
-    plot_metric(
-        summary,
-        args.output_dir,
-        metric="served_pct",
-        ylabel="Service rate (%)",
-        filename="capacity_sensitivity_service.pdf",
+    main_figure_paths = plot_vmt_co2_figure(summary, args.output_dir)
+    diagnostic_figure_paths: list[Path] = []
+    diagnostic_figure_paths.append(
+        plot_metric(
+            summary,
+            args.output_dir,
+            "service_rate",
+            "Service rate (%)",
+            "capacity_sensitivity_service.pdf",
+        )
     )
-
-    plot_metric(
-        summary,
-        args.output_dir,
-        metric="eff_on_time_pct",
-        ylabel="Effective on-time service (%)",
-        filename="capacity_sensitivity_effective_on_time.pdf",
+    diagnostic_figure_paths.append(
+        plot_metric(
+            summary,
+            args.output_dir,
+            "fallback_private_cars",
+            "Fallback private cars",
+            "capacity_sensitivity_fallback_private_cars.pdf",
+        )
     )
-
-    plot_metric(
-        summary,
-        args.output_dir,
-        metric="vmt_reduction_pct",
-        ylabel="VMT reduction (%)",
-        filename="capacity_sensitivity_vmt.pdf",
+    diagnostic_figure_paths.append(
+        plot_metric(
+            summary,
+            args.output_dir,
+            "system_vmt_reduction_pct",
+            "System VMT reduction (%)",
+            "capacity_sensitivity_vmt.pdf",
+        )
     )
-
-    plot_metric(
-        summary,
-        args.output_dir,
-        metric="co2_reduction_pct",
-        ylabel="CO$_2$ reduction (%)",
-        filename="capacity_sensitivity_co2.pdf",
+    diagnostic_figure_paths.append(
+        plot_metric(
+            summary,
+            args.output_dir,
+            "system_co2_reduction_pct",
+            r"System CO$_2$ reduction (%)",
+            "capacity_sensitivity_co2.pdf",
+        )
     )
+    if "avg_passengers_per_trip_mean" in summary and not summary[
+        "avg_passengers_per_trip_mean"
+    ].isna().all():
+        diagnostic_figure_paths.append(
+            plot_metric(
+                summary,
+                args.output_dir,
+                "avg_passengers_per_trip",
+                "Average passengers per trip",
+                "capacity_sensitivity_pax_per_trip.pdf",
+            )
+        )
 
-    plot_metric(
-        summary,
-        args.output_dir,
-        metric="late_count",
-        ylabel="Late arrivals",
-        filename="capacity_sensitivity_late.pdf",
-    )
-
-    plot_metric(
-        summary,
-        args.output_dir,
-        metric="avg_pax_per_trip",
-        ylabel="Average passengers per trip",
-        filename="capacity_sensitivity_pax_per_trip.pdf",
-    )
-
-    plot_combined_figure(summary, args.output_dir)
-
+    print_run_counts(run_counts)
     print(f"Wrote raw run CSV:     {raw_csv}")
     print(f"Wrote summary CSV:     {summary_csv}")
-    print(f"Wrote plots to:        {args.output_dir}")
+    print("Wrote main paper-facing capacity figure:")
+    for path in main_figure_paths:
+        print(f"  {path}")
+    print("Diagnostic figure files:")
+    for path in diagnostic_figure_paths:
+        print(f"  {path}")
+        png_path = path.with_suffix(".png")
+        if png_path.exists() and png_path not in diagnostic_figure_paths:
+            print(f"  {png_path}")
+    print("Diagnostic 1x3 system-metrics figure: suppressed by default.")
+    print_metric_sources(source_counts)
+    print("Note: system metrics include AV service and fallback private-car trips.")
+    print(
+        "Note: this capacity sweep is a local sensitivity analysis around the "
+        "224-seat reference, not fleet-size optimization."
+    )
+    print(f"Uncertainty shown as mean +/- {UNCERTAINTY_LABEL} across seeds.")
 
     if args.print_latex:
         print_latex_table(summary)

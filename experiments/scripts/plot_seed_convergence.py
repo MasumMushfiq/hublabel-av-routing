@@ -180,7 +180,21 @@ def find_convergence(running_means, final_mean, tol=0.01):
 
 # ── Panel drawing ─────────────────────────────────────────────────────────────
 
-def draw_convergence_panel(ax, values, ylabel, title, color, tol=0.01):
+def draw_convergence_panel(
+    ax,
+    values,
+    ylabel,
+    title,
+    color,
+    tol=0.01,
+    line_width=1.8,
+    marker_size=None,
+    label_size=None,
+    title_size=None,
+    tick_size=None,
+    legend_size=8,
+    legend_labels=None,
+):
     """
     Mirrors the style of Figure 2.1 in the confirmation report:
       - Running mean (solid)
@@ -205,20 +219,24 @@ def draw_convergence_panel(ax, values, ylabel, title, color, tol=0.01):
     ax.fill_between(seeds,
                     running_mean - running_std,
                     running_mean + running_std,
-                    alpha=0.18, color=color, label=r"$\pm1\sigma$ (running)")
+                    alpha=0.18, color=color,
+                    label=(legend_labels or {}).get("running_sd", r"$\pm1\sigma$ (running)"))
 
     # Running mean
-    ax.plot(seeds, running_mean, color=color, lw=1.8,
-            label="Running mean", zorder=3)
+    ax.plot(seeds, running_mean, color=color, lw=line_width,
+            marker="o" if marker_size else None, ms=marker_size,
+            label=(legend_labels or {}).get("running_mean", "Running mean"),
+            zorder=3)
 
     # Final mean dashed
-    ax.axhline(final_mean, color=color, ls="--", lw=1.0, alpha=0.7,
-               label=f"Final mean ({final_mean:.2f})")
+    ax.axhline(final_mean, color=color, ls="--", lw=max(1.2, line_width - 0.8),
+               alpha=0.7,
+               label=(legend_labels or {}).get("final_mean", f"Final mean ({final_mean:.2f})"))
 
     # ±1% tolerance band
-    ax.axhline(tol_hi, color="grey", ls=":", lw=0.9, alpha=0.7)
-    ax.axhline(tol_lo, color="grey", ls=":", lw=0.9, alpha=0.7,
-               label=r"$\pm$1% tolerance")
+    ax.axhline(tol_hi, color="grey", ls=":", lw=1.0, alpha=0.7)
+    ax.axhline(tol_lo, color="grey", ls=":", lw=1.0, alpha=0.7,
+               label=(legend_labels or {}).get("tolerance", r"$\pm$1% tolerance"))
 
     # Convergence annotation
     conv_seed, conv_idx = find_convergence(running_mean, final_mean, tol=tol)
@@ -235,15 +253,17 @@ def draw_convergence_panel(ax, values, ylabel, title, color, tol=0.01):
     #             bbox=dict(boxstyle="round,pad=0.2", fc="white",
     #                       ec="#d62728", alpha=0.85, lw=0.7))
 
-    ax.set_xlabel("Number of runs")
-    ax.set_ylabel(ylabel)
-    ax.set_title(title, pad=6)
+    ax.set_xlabel("Number of runs", fontsize=label_size)
+    ax.set_ylabel(ylabel, fontsize=label_size)
+    ax.set_title(title, pad=6, fontsize=title_size)
+    if tick_size is not None:
+        ax.tick_params(axis="both", labelsize=tick_size)
     ax.set_xlim(1, n)
     ax.xaxis.set_major_locator(MultipleLocator(5))
     ax.xaxis.set_minor_locator(AutoMinorLocator())
     ax.yaxis.set_minor_locator(AutoMinorLocator())
     ax.grid(axis="y", ls="--")
-    ax.legend(fontsize=8, frameon=False, loc="upper right")
+    ax.legend(fontsize=legend_size, frameon=False, loc="upper right")
 
 
 # ── Combined 4-panel figure ───────────────────────────────────────────────────
@@ -289,14 +309,26 @@ def fig_combined(series, n, out_dir):
 
 def fig_vmt_reduction(series, n, out_dir):
     """Standalone VMT reduction convergence figure for manuscript reuse."""
-    fig, ax = plt.subplots(figsize=(6.2, 4.0))
+    fig, ax = plt.subplots(figsize=(4.2, 3.2))
     draw_convergence_panel(
         ax,
         series["vmt_red"],
-        "System VMT reduction vs private (%)",
+        "System VMT reduction (%)",
         "",
         color="#4CAF50",
         tol=0.01,
+        line_width=2.3,
+        marker_size=5.5,
+        label_size=13,
+        title_size=14,
+        tick_size=11,
+        legend_size=10,
+        legend_labels={
+            "running_sd": r"$\pm$1 SD",
+            "running_mean": "Running mean",
+            "final_mean": "Final mean",
+            "tolerance": r"$\pm$1% band",
+        },
     )
     
     # Broaden y-axis range to reduce visual dominance of shaded area
