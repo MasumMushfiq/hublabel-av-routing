@@ -16,7 +16,7 @@ Usage (called from Makefile):
       --year 2018 --week 26 --date 2018-06-25
 
 Pipeline:
-  1. Extract Myki tap-on times at Melton Station (morning peak, one day).
+  1. Extract Myki tap-on times at selected station stops (morning peak, one day).
   2. Call C++ binary for N spatially-sampled, reachability-verified origins.
   3. Pair Myki time windows with C++ origins by distance bracket:
        random pairing (seed-controlled for reproducibility)
@@ -33,7 +33,7 @@ MYKI COLUMN MAPPING  (pipe-delimited, 9 columns, 0-based index)
   Col 3  CardID          anonymised card identifier
   Col 7  StopLocationID  <- boarding stop
 
-MELTON STATION STOP IDs  (from DimStopLocation)
+DEFAULT MELTON STATION STOP IDs  (from DimStopLocation)
   18, 19980, 21131, 21132, 21183, 21184, 21185
 """
 
@@ -51,7 +51,7 @@ from pathlib import Path
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-MELTON_STOP_IDS = {18, 19980, 21131, 21132, 21183, 21184, 21185}
+DEFAULT_MELTON_STOP_IDS = (18, 19980, 21131, 21132, 21183, 21184, 21185)
 TRAIN_MODE      = 2
 COL_MODE        = 0
 COL_DATETIME    = 2
@@ -74,6 +74,37 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 # ── Config loader ─────────────────────────────────────────────────────────
+
+def parse_stop_ids(value: str) -> tuple[int, ...]:
+    """
+    Parse a comma-separated list of Myki StopLocationID integers.
+
+    Designed for argparse's type= hook so invalid values produce a clear
+    command-line error before the data pipeline starts.
+    """
+    if value is None:
+        raise argparse.ArgumentTypeError("invalid --stop-ids: missing value")
+
+    stop_ids: list[int] = []
+    for idx, raw_part in enumerate(value.split(","), start=1):
+        part = raw_part.strip()
+        if not part:
+            raise argparse.ArgumentTypeError(
+                f"invalid --stop-ids: empty value at position {idx}"
+            )
+        try:
+            stop_ids.append(int(part))
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"invalid --stop-ids: {part!r} is not an integer"
+            ) from exc
+
+    if not stop_ids:
+        raise argparse.ArgumentTypeError(
+            "invalid --stop-ids: provide at least one StopLocationID"
+        )
+    return tuple(stop_ids)
+
 
 def load_peak_window(config_path: str) -> tuple[str, str]:
     """
@@ -134,7 +165,8 @@ def extract_tap_ons(files: list[Path],
                     peak_start: time,
                     peak_end: time,
                     pickup_buffer_min: float,
-                    date_filter: str | None) -> list[dict]:
+                    date_filter: str | None,
+                    stop_ids: tuple[int, ...]) -> list[dict]:
     """
     Returns one record per unique card_id (earliest tap-on wins).
 
@@ -157,7 +189,7 @@ def extract_tap_ons(files: list[Path],
                     try:
                         if int(cols[COL_MODE]) != TRAIN_MODE:
                             continue
-                        if int(cols[COL_STOP_ID]) not in MELTON_STOP_IDS:
+                        if int(cols[COL_STOP_ID]) not in stop_ids:
                             continue
                     except ValueError:
                         continue
@@ -357,6 +389,7 @@ def default_metadata_path(out_path: str) -> str:
 
 def write_metadata(metadata_path: str,
                    output_csv: str,
+                   station_name: str,
                    destination_node: int,
                    myki_root: str,
                    nodes_file: str,
@@ -375,6 +408,7 @@ def write_metadata(metadata_path: str,
                    origin_sampling: str,
                    origin_candidate_source: str | None,
                    residential_candidate_metadata: str | None,
+                   stop_ids: tuple[int, ...],
                    tap_ons_extracted: int,
                    reachable_origins_generated: int,
                    commuters_written: int) -> None:
@@ -384,9 +418,17 @@ def write_metadata(metadata_path: str,
     }
     metadata = {
         "source": "Myki ScanOnTransaction",
-        "station_name": "Melton",
+        "station_name": station_name,
         "destination_node": destination_node,
-        "myki_stop_ids": sorted(MELTON_STOP_IDS),
+        "myki_stop_ids": sorted(stop_ids),
+        "source_stop_filter": {
+            "column": "StopLocationID",
+            "stop_ids": sorted(stop_ids),
+            "default_melton_stop_ids": list(DEFAULT_MELTON_STOP_IDS),
+            "uses_default_melton_stop_ids": (
+                tuple(sorted(stop_ids)) == tuple(sorted(DEFAULT_MELTON_STOP_IDS))
+            ),
+        },
         "myki_root": myki_root,
         "nodes_file": nodes_file,
         "coord_nodes_file": coord_nodes_file,
@@ -464,6 +506,15 @@ def main():
     p.add_argument("--week",           type=int, default=None)
     p.add_argument("--date",           default=None,
                    help="Single day YYYY-MM-DD (strongly recommended).")
+    p.add_argument("--station-name",   default="Melton",
+                   help="Station label written to metadata. Defaults to "
+                        "Melton for backward compatibility.")
+    p.add_argument("--stop-ids",       type=parse_stop_ids,
+                   default=DEFAULT_MELTON_STOP_IDS,
+                   help="Comma-separated Myki StopLocationID integers used "
+                        "to select station tap-ons. Defaults to Melton's "
+                        "current IDs for backward compatibility: "
+                        "18,19980,21131,21132,21183,21184,21185.")
     p.add_argument("--pickup-buffer",  type=float, default=30.0,
                    help="Pickup window width in minutes: pickup_earliest = "
                         "drop_off_latest - N. Separate from solver grace period. "
@@ -481,6 +532,7 @@ def main():
                    help="Optional metadata JSON path for residential/address candidate generation.")
     args = p.parse_args()
     coord_nodes_file = args.coord_nodes_file or args.nodes_file
+    stop_ids = set(args.stop_ids)
 
     peak_start_str, peak_end_str = load_peak_window(args.config)
     peak_start    = datetime.strptime(peak_start_str, "%H:%M").time()
@@ -495,6 +547,7 @@ def main():
         sys.exit("ERROR: No ScanOnTransaction files found.")
     print(f"  Config:  {args.config}")
     print(f"  Window:  {peak_start_str} – {peak_end_str}  (pickup buffer {pickup_buffer} min)")
+    print(f"  Stop IDs: {','.join(str(x) for x in args.stop_ids)}")
     print(f"  Files:   {len(files)}")
     if args.date:
         print(f"  Date:    {args.date}")
@@ -504,6 +557,7 @@ def main():
         files, peak_start, peak_end,
         pickup_buffer,
         date_filter=args.date,
+        stop_ids=stop_ids,
     )
     if not myki_rows:
         sys.exit("ERROR: No tap-ons matched filters.")
@@ -532,6 +586,7 @@ def main():
     write_metadata(
         metadata_out,
         output_csv=args.out,
+        station_name=args.station_name,
         destination_node=args.dest_node,
         myki_root=args.myki_root,
         nodes_file=args.nodes_file,
@@ -550,6 +605,7 @@ def main():
         origin_sampling=args.origin_sampling,
         origin_candidate_source=args.origin_candidate_source,
         residential_candidate_metadata=args.residential_candidate_metadata,
+        stop_ids=args.stop_ids,
         tap_ons_extracted=len(myki_rows),
         reachable_origins_generated=len(cpp_rows),
         commuters_written=len(merged),

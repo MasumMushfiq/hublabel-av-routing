@@ -99,6 +99,8 @@ Current key inputs:
 --year
 --week
 --date
+--station-name
+--stop-ids
 --pickup-buffer
 --av-speed-kmh
 --seed
@@ -106,12 +108,23 @@ Current key inputs:
 --metadata-out
 ```
 
+`--station-name` is a metadata label for the selected station and defaults to `Melton` for backward compatibility.
+
+`--stop-ids` is a comma-separated list of Myki `StopLocationID` values used to select station tap-ons. For backward compatibility, omitting `--stop-ids` uses the current Melton default IDs:
+
+```text
+18,19980,21131,21132,21183,21184,21185
+```
+
+Caulfield and Pakenham transferability/robustness runs must pass their station-specific Myki `StopLocationID` values explicitly and should set `--station-name` accordingly.
+
 `--nodes-file` is the origin candidate pool passed to `build_commuters_reachable`. Main Melton experiments should use `files/inputs/melton_residential_candidate_nodes.csv`. `--coord-nodes-file` is the full node-coordinate lookup used only for distance-aware pairing and the haversine feasibility filter; if omitted, it defaults to `--nodes-file` for backward compatibility.
 
 Current metadata should record:
 
 - station/source information,
 - destination node,
+- Myki station stop IDs used for tap-on filtering,
 - Myki root,
 - nodes file,
 - coordinate lookup nodes file,
@@ -230,6 +243,26 @@ The resulting candidate node file can be passed to `python/build_myki_commuters.
 ```
 
 `build_commuters_reachable` still performs bidirectional reachability validation after residential candidate preprocessing.
+
+### 3.3 Station-Generic Network Preparation
+
+Station-generic OSM network preparation is implemented in:
+
+```text
+python/build_osm_network_inputs.py
+```
+
+The in-project OSM builder creates the station-specific road-network artifacts:
+
+```text
+files/inputs/<station>_nodes_lat_lon.csv
+files/inputs/<station>_graph_speed.txt
+files/inputs/<station>_graph_distance.txt
+files/inputs/<station>_graph_time.txt
+files/inputs/<station>_network_metadata.json
+```
+
+Melton's completed primary case uses preserved canonical input artifacts. New transferability stations, including Caulfield and Pakenham, should be generated consistently with the current station-generic pipeline rather than by regenerating Melton's canonical files.
 
 Paper framing:
 
@@ -845,8 +878,15 @@ Current experiment presentation plan:
    - run deliberately as a robustness check;
    - do not use accidental generic results as the main evidence.
 7. Multi-station extension:
-   - use selected representative fleets for Caulfield plus one more station;
-   - do not run a full 35-grid unless time allows.
+   - active next implementation task;
+   - use selected representative fleets for Caulfield and Pakenham;
+   - keep Melton as the primary/full-depth case study;
+   - treat Caulfield and Pakenham as transferability/robustness checks, not full equal-depth case studies;
+   - do not run a full 35-grid for Caulfield or Pakenham unless explicitly requested later.
+8. Multi-station robustness presentation:
+   - station summary table: station, context, commuters, seats, commuter/seat ratio, number of origin nodes, and average/median direct distance if available;
+   - one compact multi-station result figure/table comparing selected fleets across service rate, fallback private-car use, system VMT reduction, system CO2 reduction, and operating cost or cost reduction if available;
+   - do not create separate full per-station result sections unless needed.
 
 ### Paper-Facing Plot Outputs
 
@@ -1143,6 +1183,97 @@ The analyzer should extract service, fallback private cars, system VMT/energy/CO
 
 ---
 
+### 16.4 Multi-Station Robustness Experiment
+
+The multi-station extension is the active next implementation task. It is a compact robustness/transferability experiment, not a repeat of the full Melton analysis.
+
+Stations:
+
+| Station | Role |
+|---|---|
+| Melton | Primary case; full 35-composition residential-origin grid already completed |
+| Caulfield | Dense inner/suburban interchange-style contrast |
+| Pakenham | Outer-suburban terminus / car-oriented contrast |
+
+Purpose:
+
+- test whether the fleet-composition findings from Melton are station-specific;
+- present robustness/transferability evidence for the pipeline and fleet-composition findings;
+- keep the section compact for a SIGSPATIAL Applications paper.
+
+Demand and fleet scaling:
+
+- Preserve the Melton commuter-to-seat ratio rather than forcing the same absolute demand everywhere.
+- Melton ratio: `1465` commuters / `224` seats ≈ `6.54` commuters per seat.
+- For each additional station, use station-specific commuter demand if available, and choose reference fleet seats to preserve approximately this ratio.
+- If controlled comparison is needed because station-specific demand is unavailable or unreliable, document this explicitly and keep the same commuter-to-seat ratio.
+- Report the actual commuter count and seat count per station in the experiment summary.
+
+Temporal demand construction:
+
+- Prefer station-specific Myki/tap-on distributions from the same 2018 dataset.
+- If station-specific Myki distributions are not immediately available, use the Melton 20-minute slot proportions as a prior applied to the station-specific commuter count.
+- Do not use a uniform synthetic temporal distribution unless explicitly justified later.
+- Preserve the same morning-peak window: `07:00--09:30`.
+- Preserve the same train-aligned/fixed-slot structure: 20-minute slots.
+
+Solver/settings:
+
+- Reuse Melton-calibrated settings:
+  - PyVRP/HGS;
+  - 300-second runtime;
+  - 15 seeds;
+  - fixed 20-minute time windows;
+  - zero pre-departure margin;
+  - no distance-band penalty.
+- Do not redo full calibration for Caulfield or Pakenham.
+- If service rate under the reference/balanced fleet is extremely low or extremely high, flag it as a boundary condition and report it rather than silently recalibrating.
+
+Compact fleet set for Caulfield/Pakenham:
+
+| Fleet | Seat shares | Role |
+|---|---|---|
+| all-car | S0/M0/C100/MB0 | homogeneous comparator |
+| all-minibus | S0/M0/C0/MB100 | additional homogeneous/extreme comparator |
+| balanced | S25/M25/C25/MB25 | balanced heterogeneous reference |
+| VMT-oriented / minibus-heavy | S25/M0/C0/MB75 | system VMT-oriented representative |
+| low-emission / moped-heavy | S25/M75/C0/MB0 | system energy/CO2-oriented representative |
+
+Do not add all-moped to the multi-station robustness experiment unless explicitly requested later. Do not redefine the completed Melton representative fleets.
+
+Minimum data-quality checks for new stations:
+
+- Residential origin candidates should cover the station catchment without obvious large OSM gaps.
+- Bidirectional reachability should be validated:
+  - origin -> station;
+  - station -> origin.
+- At least 95% of sampled origins should be reachable, or failures should be reported and investigated.
+- At least 200 distinct origin nodes should be available after mapping/reachability filtering; otherwise candidate extraction may be too sparse.
+- Balanced/reference service rate should be sanity checked. If it is below roughly 45% or above roughly 97%, flag the station as a boundary case.
+- Seed variation across 15 seeds should be checked, especially for service rate and system VMT reduction.
+
+Data-preparation requirements for each new station:
+
+- station OSM PBF or clipped OSM extract;
+- graph speed file;
+- nodes lat/lon CSV;
+- hub-label distance/time files;
+- residential candidate points/nodes/mapping files;
+- `commuters_residential.csv`;
+- `commuters_residential_metadata.json`;
+- station node ID;
+- station-specific or prior-based temporal demand distribution.
+
+Final commuter CSV schema remains:
+
+```text
+id,origin_node,destination_node,pickup_earliest,drop_off_latest
+```
+
+Do not describe origins as observed home locations; they remain inferred residential/address candidate road nodes paired with temporal demand.
+
+---
+
 
 ## 17. Matrix Generation Pipeline
 
@@ -1223,6 +1354,9 @@ python/build_myki_commuters.py
 
 python/build_residential_origin_candidates.py
     OSM residential/address candidate extraction, nearest road-node mapping, walking-threshold filtering, and candidate metadata writing.
+
+python/build_osm_network_inputs.py
+    Station-generic OSM road-network artifact builder for nodes, speed, distance, time, and network metadata inputs.
 
 python/tests/test_simulate_utils.py
     Unit tests for core utility behavior and metric formulas.
@@ -1465,7 +1599,10 @@ Immediate next work:
 6. Run representative-fleet capacity sensitivity. Completed under residential-origin demand; the earlier generic-input run is retained as robustness/diagnostic only.
 7. Run pilot-fleet demand sensitivity. Completed under residential-origin demand with near-112-seat pilot fleets.
 8. Run deliberate generic-origin robustness checks. Planned; generic reachable-node results remain robustness/sensitivity comparisons only.
-9. Extend selected representative fleets to multiple stations. Planned for Caulfield plus one additional station; no full 35-grid unless time allows.
-10. Share updated outputs with supervisors before the next meeting.
+9. Generalize the Melton data-generation pipeline for Caulfield and Pakenham. Active next implementation task.
+10. Build and validate Caulfield/Pakenham station datasets, including residential candidates, reachability, station node IDs, hub-label matrices, commuter files, and temporal demand distributions.
+11. Run compact five-fleet multi-station robustness experiments for Caulfield and Pakenham; do not run full 35-composition grids unless explicitly requested later.
+12. Generate station summary and multi-station comparison outputs.
+13. Share updated outputs with supervisors before the next meeting.
 
-Main fleet-composition results, representative-fleet capacity sensitivity, pilot-fleet demand sensitivity, and final cost-related interpretation should use the refined all-electric energy, emissions, cost, and parking evaluation model.
+Main fleet-composition results, representative-fleet capacity sensitivity, pilot-fleet demand sensitivity, multi-station robustness checks, and final cost-related interpretation should use the refined all-electric energy, emissions, cost, and parking evaluation model.
