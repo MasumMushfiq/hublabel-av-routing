@@ -13,7 +13,7 @@ fi
 COMMUTERS=files/inputs/footscray_commuters_residential.csv
 STATION=files/inputs/footscray_station.csv
 MATRICES=dataset/FOOTSCRAY/footscray_residential_matrix
-BASE_CONFIG=config/footscray_base_config.json
+BASE_CONFIG="${BASE_CONFIG:-config/footscray_base_config.json}"
 OUTPUT_DIR=experiments/results/footscray/smoke_balanced_80seats_mb10_h0630_seed1
 CONFIG="$OUTPUT_DIR/config.json"
 

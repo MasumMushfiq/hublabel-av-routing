@@ -1,24 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# OPTIONAL CORRECTED FOOTSCRAY DIAGNOSTIC: compares time-window representations.
+# This is not the archived pre-departure-margin sweep; BUFFER_MINUTES is retained
+# only as the existing override for a fixed margin applied to every condition.
+
 TOTAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 PARALLEL_JOBS=${PARALLEL_JOBS:-$(( TOTAL_CORES > 2 ? TOTAL_CORES - 2 : 1 ))}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+export PYTHON_BIN="${PYTHON_BIN:-python3}"
 PYVRP_SCRIPT="$ROOT/python/simulate_first_mile_pyvrp.py"
 # Input overrides:
-#   COMMUTERS_CSV default: $ROOT/files/inputs/commuters.csv
-#   STATIONS_CSV  default: $ROOT/files/inputs/stations.csv
-#   MATRICES_DIR  default: $ROOT/dataset/MELTON/melton_generic_matrix
-COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters.csv}"
-STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
-MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
-BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/legacy_melton_base_config.json}"
+#   COMMUTERS_CSV default: $ROOT/files/inputs/footscray_commuters_residential.csv
+#   STATIONS_CSV  default: $ROOT/files/inputs/footscray_station.csv
+#   MATRICES_DIR  default: $ROOT/dataset/FOOTSCRAY/footscray_residential_matrix
+COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/footscray_commuters_residential.csv}"
+STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/footscray_station.csv}"
+MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/FOOTSCRAY/footscray_residential_matrix}"
+BASE_CONFIG="${BASE_CONFIG:-config/footscray_base_config.json}"
+if [[ "$BASE_CONFIG" != /* ]]; then
+    BASE_CONFIG="$ROOT/$BASE_CONFIG"
+fi
 DRY_RUN=${DRY_RUN:-0}
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-EXPERIMENT="tw_mode_comparison_224seats"
+EXPERIMENT="${EXPERIMENT:-tw_mode_comparison_footscray_80seats}"
 OUTPUT_ROOT="${OUTPUT_DIR:-$ROOT/experiments/results}"
 if [[ "$OUTPUT_ROOT" != /* ]]; then
     OUTPUT_ROOT="$ROOT/$OUTPUT_ROOT"
@@ -41,8 +48,9 @@ echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║        PyVRP TIME-WINDOW MODE COMPARISON                       ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
-echo "  Fleet    : 56S/28M/14C/7MB (224 seats, balanced 25/25/25/25 seat share)"
-echo "  Demand   : $COMMUTERS_CSV  |  Time: ${TIME_LIMIT_SECONDS}s  |  Buffer: ${BUFFER_MINUTES} min"
+echo "  Fleet    : Footscray 80-seat reference fleet (minibus capacity 10)"
+echo "  Demand   : corrected Footscray residential-origin demand  |  Time: ${TIME_LIMIT_SECONDS}s"
+echo "  Pre-departure margin: ${BUFFER_MINUTES} min (fixed across conditions)"
 echo "  Distance-band penalty: none"
 echo "  Experiment folder: $EXPERIMENT"
 echo "  Conditions: ${LABELS[*]}"
@@ -154,4 +162,4 @@ FAILED=$(find "$RESULTS_DIR" -name "simulation.log" \
     || echo "  No failures detected"
 echo ""
 
-echo "  Next: python3 experiments/scripts/plot_tw_mode_comparison.py"
+echo "  Next: $PYTHON_BIN experiments/scripts/plot_tw_mode_comparison_2x2.py --results-dir $RESULTS_DIR --out $RESULTS_DIR/plots"

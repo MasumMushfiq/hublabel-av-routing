@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# ARCHIVED / NOT ACTIVE FOR CORRECTED FOOTSCRAY PAPER WORKFLOW.
+# Retained only for historical legacy Melton fleet diagnostics/reproducibility.
+# Do not use for corrected Footscray experiments.
 # =============================================================================
 # run_fleet_composition_grid.sh
 # Fleet composition grid experiment — fixed 224-seat capacity sweep.

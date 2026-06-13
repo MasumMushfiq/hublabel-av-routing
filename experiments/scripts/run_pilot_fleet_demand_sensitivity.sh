@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ARCHIVED / NOT ACTIVE FOR CORRECTED FOOTSCRAY PAPER WORKFLOW.
+# Retained only for historical legacy Melton pilot diagnostics/reproducibility.
+# Do not use for corrected Footscray experiments.
+
 # =============================================================================
 # run_pilot_fleet_demand_sensitivity.sh
 #

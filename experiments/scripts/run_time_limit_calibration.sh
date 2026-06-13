@@ -5,27 +5,31 @@ TOTAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4
 PARALLEL_JOBS=${PARALLEL_JOBS:-$(( TOTAL_CORES > 2 ? TOTAL_CORES - 2 : 1 ))}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+export PYTHON_BIN="${PYTHON_BIN:-python3}"
 PYVRP_SCRIPT="$ROOT/python/simulate_first_mile_pyvrp.py"
 # Input overrides:
-#   COMMUTERS_CSV default: $ROOT/files/inputs/commuters.csv
-#   STATIONS_CSV  default: $ROOT/files/inputs/stations.csv
-#   MATRICES_DIR  default: $ROOT/dataset/MELTON/melton_generic_matrix
-COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters.csv}"
-STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
-MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_generic_matrix}"
-BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/legacy_melton_base_config.json}"
+#   COMMUTERS_CSV default: $ROOT/files/inputs/footscray_commuters_residential.csv
+#   STATIONS_CSV  default: $ROOT/files/inputs/footscray_station.csv
+#   MATRICES_DIR  default: $ROOT/dataset/FOOTSCRAY/footscray_residential_matrix
+COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/footscray_commuters_residential.csv}"
+STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/footscray_station.csv}"
+MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/FOOTSCRAY/footscray_residential_matrix}"
+BASE_CONFIG="${BASE_CONFIG:-config/footscray_base_config.json}"
+if [[ "$BASE_CONFIG" != /* ]]; then
+    BASE_CONFIG="$ROOT/$BASE_CONFIG"
+fi
 DRY_RUN=${DRY_RUN:-0}
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-EXPERIMENT="time_limit_calibration_224seats"
+EXPERIMENT="${EXPERIMENT:-time_limit_calibration_footscray_80seats}"
 OUTPUT_ROOT="${OUTPUT_DIR:-$ROOT/experiments/results}"
 if [[ "$OUTPUT_ROOT" != /* ]]; then
     OUTPUT_ROOT="$ROOT/$OUTPUT_ROOT"
 fi
 RESULTS_DIR="$OUTPUT_ROOT/$EXPERIMENT"
 CONFIGS_DIR="$RESULTS_DIR/configs"
-TIME_LIMITS=(${TIME_LIMITS_OVERRIDE:-10 20 30 60 120 180 240 300 450 600})
+TIME_LIMITS_VALUE="${TIME_LIMITS:-${TIME_LIMITS_OVERRIDE:-10 20 30 60 120 180 240 300 450 600}}"
+read -r -a TIME_LIMITS <<< "$TIME_LIMITS_VALUE"
 N_SEEDS=${N_SEEDS:-10}
 # TIME_LIMITS=(10 20 30 60 120 180 240 300 450 600)
 # N_SEEDS=10
@@ -41,8 +45,8 @@ echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║        PyVRP TIME LIMIT CALIBRATION                            ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
-echo "  Fleet    : 56S/28M/14C/7MB (224 seats, balanced 25/25/25/25 seat share)"
-echo "  Demand   : 1465 Myki commuters  |  Buffer: 0 min  |  Distance-band penalty: none"
+echo "  Fleet    : Footscray 80-seat reference fleet (minibus capacity 10)"
+echo "  Demand   : corrected Footscray residential-origin demand"
 echo "  Limits   : ${TIME_LIMITS[*]} seconds  |  Seeds: $N_SEEDS"
 echo "  Experiment folder: $EXPERIMENT"
 echo "  Total    : $TOTAL jobs  |  Parallel: $PARALLEL_JOBS workers"
@@ -108,7 +112,7 @@ run_one() {
     mkdir -p "$out_dir"
     cp "$CONFIGS_DIR/tl_${tl}s.json" "$out_dir/config.json"
     printf "[tl_%ss seed_%s] starting...\n" "$tl" "$seed"
-    if python3 "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$MATRICES_DIR" \
+    if "$PYTHON_BIN" "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$MATRICES_DIR" \
             "$out_dir/assignments.csv" "$out_dir/av_routes.csv" \
             "$CONFIGS_DIR/tl_${tl}s.json" \
             "$out_dir/baseline.json" "$out_dir/metrics.json" "$out_dir/comparison.json" \
@@ -136,4 +140,4 @@ FAILED=$(find "$RESULTS_DIR" -name "simulation.log" \
     || echo "  No failures detected"
 echo ""
 
-echo "  Next: python3 experiments/scripts/plot_time_limit_calibration.py"
+echo "  Next: $PYTHON_BIN experiments/scripts/plot_time_limit_calibration.py --results-dir $RESULTS_DIR --out $RESULTS_DIR/plots"

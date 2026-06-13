@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ARCHIVED / NOT ACTIVE FOR CORRECTED FOOTSCRAY PAPER WORKFLOW.
+# Retained only for historical pre-departure-margin diagnostics/reproducibility.
+# Do not use for corrected Footscray experiments.
+
 TOTAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 PARALLEL_JOBS=${PARALLEL_JOBS:-$(( TOTAL_CORES > 2 ? TOTAL_CORES - 2 : 1 ))}
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
