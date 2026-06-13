@@ -3,7 +3,7 @@
 **Project:** Heterogeneous electric AV feeder fleet for first-mile access to Melton Station  
 **Purpose:** defensible, transparent cost assumptions for evaluation-only cost metrics  
 **Recommended repository path:** `docs/cost_assumptions_reference.md`  
-**Status:** base-case values ready for `config/base_config.json` after review  
+**Status:** base-case values recorded in the legacy Melton config, `config/legacy_melton_base_config.json`
 
 ---
 
@@ -268,7 +268,7 @@ Using `r = 0.07` and `service_days_per_year = 250`:
 
 ## 7. Recommended config update
 
-Update `config/base_config.json` cost model only:
+Update the legacy Melton `config/legacy_melton_base_config.json` cost model only:
 
 ```json
 "cost_model": {
@@ -358,6 +358,6 @@ Suggested table for the paper if space permits:
 ## 11. Notes for future updates
 
 - Keep this file beside `docs/energy_assumptions_reference.md`.
-- Update `docs/PROJECT_SPEC.md` after `config/base_config.json` is changed.
+- Update `docs/PROJECT_SPEC.md` after `config/legacy_melton_base_config.json` is changed.
 - Any future change that makes cost part of the solver objective must be treated as a new modeling assumption and documented separately.
 - If final results emphasize cost rankings strongly, include minibus lifetime and lower-cost car sensitivities.

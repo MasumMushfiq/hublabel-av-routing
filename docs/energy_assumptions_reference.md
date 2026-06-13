@@ -400,7 +400,7 @@ All vehicles are modeled as electric vehicles to reflect the likely deployment c
 
 When converting the codebase from fuel to electricity, update:
 
-1. `config/base_config.json`
+1. `config/legacy_melton_base_config.json`
    - replace `fuel_l_per_100km` with `energy_kwh_per_km`
    - replace private-car fuel fields with private-car energy fields
    - add or update `energy_model`

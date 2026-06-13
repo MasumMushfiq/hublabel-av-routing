@@ -320,6 +320,7 @@ def map_candidates_to_road_nodes(
     road_nodes: pd.DataFrame,
     station_node: int,
     walking_threshold_m: float,
+    max_station_distance_m: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     station_rows = road_nodes.loc[road_nodes["node_id"] == station_node]
     if station_rows.empty:
@@ -354,6 +355,12 @@ def map_candidates_to_road_nodes(
         if direct_station_distance_m <= walking_threshold_m:
             kept = False
             reason = "within_walking_threshold"
+        elif (
+            max_station_distance_m is not None
+            and direct_station_distance_m > max_station_distance_m
+        ):
+            kept = False
+            reason = "beyond_max_station_distance"
         elif nearest_node == station_node:
             kept = False
             reason = "mapped_to_station_node"
@@ -397,11 +404,18 @@ def map_candidates_to_road_nodes(
         "station_lat": station_lat,
         "station_lon": station_lon,
         "walking_threshold_m": walking_threshold_m,
+        "max_station_distance_m": max_station_distance_m,
         "raw_candidates": len(candidates),
         "mapped_candidate_rows": int(len(mapping_df)),
         "kept_candidate_rows_after_filter": int(mapping_df["kept"].sum()) if not mapping_df.empty else 0,
         "unique_candidate_road_nodes_after_filter": int(len(nodes_df)),
         "filtered_candidate_rows": int((~mapping_df["kept"]).sum()) if not mapping_df.empty else 0,
+        "removed_by_walking_threshold": int(
+            (mapping_df["filter_reason"] == "within_walking_threshold").sum()
+        ) if not mapping_df.empty else 0,
+        "removed_by_outer_catchment": int(
+            (mapping_df["filter_reason"] == "beyond_max_station_distance").sum()
+        ) if not mapping_df.empty else 0,
         "filter_reason_counts": mapping_df["filter_reason"].value_counts().to_dict() if not mapping_df.empty else {},
     }
 
@@ -454,7 +468,7 @@ def write_metadata(
         "out_nodes_schema": (
             "node_id,lat,lon plus debug columns" if include_debug_columns_in_nodes else "node_id,lat,lon"
         ),
-        "candidate_source": "OpenStreetMap PBF from same Melton extract used for network construction",
+        "candidate_source": f"Residential/address candidates extracted from supplied OSM PBF: {osm_pbf}",
         "candidate_extraction_policy": {
             "kept": {
                 "address_tagged_objects": "objects with addr:* tags unless clearly non-residential by building tag",
@@ -471,6 +485,13 @@ def write_metadata(
             "method": "direct haversine distance from candidate point to station node",
             "note": "This is not pedestrian-network distance; it is a reproducible first-pass exclusion threshold.",
         },
+        "walking_threshold_m": mapping_stats["walking_threshold_m"],
+        "max_station_distance_m": mapping_stats["max_station_distance_m"],
+        "raw_candidates": mapping_stats["raw_candidates"],
+        "kept_candidate_rows": mapping_stats["kept_candidate_rows_after_filter"],
+        "unique_candidate_road_nodes": mapping_stats["unique_candidate_road_nodes_after_filter"],
+        "removed_by_walking_threshold": mapping_stats["removed_by_walking_threshold"],
+        "removed_by_outer_catchment": mapping_stats["removed_by_outer_catchment"],
         "handler_stats": dict(handler_stats),
         "mapping_stats": mapping_stats,
         "next_pipeline_step": (
@@ -492,6 +513,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--road-nodes", required=True, type=Path, help="Road-node CSV with node_id,lat,lon")
     p.add_argument("--station-node", required=True, type=int, help="Station/depot road node id, e.g. 19858")
     p.add_argument("--walking-threshold-m", type=float, default=800.0, help="Exclude candidates at or below this direct distance to station")
+    p.add_argument(
+        "--max-station-distance-m",
+        type=float,
+        default=None,
+        help="Optional outer direct-distance catchment in metres; defaults to no outer filter",
+    )
     p.add_argument("--out-nodes", required=True, type=Path, help="Output road-node candidate CSV for build_myki_commuters.py --nodes-file")
     p.add_argument("--out-points", required=True, type=Path, help="Output raw extracted residential/address candidate points CSV")
     p.add_argument("--out-mapping", required=True, type=Path, help="Output candidate-to-road-node mapping diagnostics CSV")
@@ -507,6 +534,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    if (
+        args.max_station_distance_m is not None
+        and args.max_station_distance_m <= args.walking_threshold_m
+    ):
+        sys.exit(
+            "ERROR: --max-station-distance-m must be greater than "
+            "--walking-threshold-m"
+        )
+
     if not args.osm_pbf.exists():
         sys.exit(f"ERROR: OSM PBF not found: {args.osm_pbf}")
 
@@ -517,6 +553,10 @@ def main() -> None:
     print(f"Road nodes          : {args.road_nodes}")
     print(f"Station node        : {args.station_node}")
     print(f"Walking threshold   : {args.walking_threshold_m:.1f} m")
+    if args.max_station_distance_m is None:
+        print("Outer catchment     : no outer catchment filter")
+    else:
+        print(f"Outer catchment     : {args.max_station_distance_m:.1f} m")
 
     print("\n-- Step 1: Load road nodes --")
     road_nodes = load_road_nodes(args.road_nodes)
@@ -538,12 +578,13 @@ def main() -> None:
     write_candidate_points(candidates, args.out_points)
     print(f"  Candidate points written: {args.out_points}")
 
-    print("\n-- Step 3: Map candidates to nearest road nodes and apply walking filter --")
+    print("\n-- Step 3: Map candidates to nearest road nodes and apply distance filters --")
     mapping_df, nodes_df, mapping_stats = map_candidates_to_road_nodes(
         candidates=candidates,
         road_nodes=road_nodes,
         station_node=args.station_node,
         walking_threshold_m=args.walking_threshold_m,
+        max_station_distance_m=args.max_station_distance_m,
     )
 
     args.out_mapping.parent.mkdir(parents=True, exist_ok=True)

@@ -16,7 +16,7 @@ set -euo pipefail
 #   - Demand sampled once per level (DEMAND_SAMPLE_SEED=42), nested subsets
 #   - All fleets and seeds solve the same demand instance at each level
 #   - Solver: PyVRP/HGS, 300s, fixed_slots 20-min, buffer 0, penalty none
-#   - All-electric energy/emissions model from config/base_config.json
+#   - All-electric energy/emissions model from config/legacy_melton_base_config.json
 #   - Raw-distance objective; cost and parking are evaluation-only metrics
 #   - x1.00 is intentionally an overload/stress-test case
 #
@@ -43,7 +43,7 @@ set -euo pipefail
 #   COMMUTERS_CSV default: $ROOT/files/inputs/commuters_residential.csv
 #   STATIONS_CSV  default: $ROOT/files/inputs/stations.csv
 #   MATRICES_DIR  default: $ROOT/dataset/MELTON/melton_residential_matrix
-#   BASE_CONFIG   default: $ROOT/config/base_config.json
+#   BASE_CONFIG   default: $ROOT/config/legacy_melton_base_config.json
 # =============================================================================
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -71,7 +71,7 @@ INCLUDE_ALL_MINIBUS="${INCLUDE_ALL_MINIBUS:-0}"
 FULL_COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters_residential.csv}"
 STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
 MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_residential_matrix}"
-BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/base_config.json}"
+BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/legacy_melton_base_config.json}"
 if [[ "$BASE_CONFIG" != /* ]]; then
   BASE_CONFIG="$ROOT/$BASE_CONFIG"
 fi

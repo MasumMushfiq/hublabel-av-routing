@@ -45,7 +45,7 @@ PFX_TIME       := $(DATASET_DIR)/melton_time
 COMMUTERS_CSV  := $(INPUT_DIR)/commuters.csv
 STATIONS_CSV   := $(INPUT_DIR)/stations.csv
 SPEED_TABLE    := $(INPUT_DIR)/melton_graph_speed.txt
-CONFIG_FILE    := $(CONFIG_DIR)/base_config.json
+CONFIG_FILE    := $(CONFIG_DIR)/legacy_melton_base_config.json
 
 # =========================
 # Results directories
@@ -121,10 +121,12 @@ solver_run: $(SIM_ORTOOLS_BIN) $(PFX_DIST).dorder $(PFX_DIST).dlabel
 # Matrix dump target
 # =========================
 
-.PHONY: dump_matrices
+.PHONY: dump_matrices footscray_dump_matrices
 
 dump_matrices: $(DUMP_BIN) $(PFX_DIST).dorder $(PFX_DIST).dlabel
 	@test -f "$(COMMUTERS_CSV)" || (echo "Missing $(COMMUTERS_CSV)"; exit 1)
+	@awk -F',' 'NR == 1 { for (i = 1; i <= NF; i++) { gsub(/\r/, "", $$i); if ($$i == "origin_node") found = 1 } exit(found ? 0 : 1) }' "$(COMMUTERS_CSV)" || \
+		(echo "ERROR: $(COMMUTERS_CSV) must be a final commuter CSV with an origin_node column; do not pass a candidate-node pool with node_id."; exit 1)
 	@test -f "$(SPEED_TABLE)"   || (echo "Missing $(SPEED_TABLE)";   exit 1)
 	@mkdir -p "$(MATRICES_DIR)"
 	@echo ""
@@ -140,6 +142,16 @@ dump_matrices: $(DUMP_BIN) $(PFX_DIST).dorder $(PFX_DIST).dlabel
 	@echo ""
 	@echo "✓ Matrices written to $(MATRICES_DIR):"
 	@ls -lh "$(MATRICES_DIR)"
+
+footscray_dump_matrices:
+	$(MAKE) dump_matrices \
+		DATASET_DIR="dataset/FOOTSCRAY" \
+		GRAPH_DIST="files/inputs/footscray_graph_distance.txt" \
+		PFX_DIST="dataset/FOOTSCRAY/footscray_dist" \
+		COMMUTERS_CSV="files/inputs/footscray_commuters_residential.csv" \
+		SPEED_TABLE="files/inputs/footscray_graph_speed.txt" \
+		MATRICES_DIR="dataset/FOOTSCRAY/footscray_residential_matrix" \
+		DEST_NODE=240615
 
 # =========================
 # PyVRP simulation target

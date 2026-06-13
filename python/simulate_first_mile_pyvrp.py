@@ -60,6 +60,7 @@ from simulate_first_mile_utils import (
     Commuter,
     VehicleConfig,
     TimeWindowConfig,
+    ServiceHorizonConfig,
     ExperimentConfig,
     CostModel,
     smooth_penalty,
@@ -79,6 +80,21 @@ from simulate_first_mile_utils import (
 
 # Data classes are imported from simulate_first_mile_utils to ensure a
 # single canonical definition for type checking and unit tests.
+
+
+def routing_cost_log_wording(penalty_mode: str) -> Tuple[str, str]:
+    """Return objective and reconciliation wording for the active cost mode."""
+    if penalty_mode == "none":
+        return (
+            "routing cost; raw distance under current config",
+            "Gap (B)→(C) reflects extraction, rounding, or "
+            "distance-accounting differences.",
+        )
+    return (
+        "routing cost; penalty-adjusted",
+        "Gap (B)→(C) reflects penalty adjustment plus extraction, rounding, "
+        "or distance-accounting differences.",
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -116,19 +132,53 @@ def load_station_node(path: str) -> int:
 def load_config(path: str) -> ExperimentConfig:
     with open(path) as f:
         cfg = json.load(f)
+
+    penalty = cfg.get("penalty_parameters") or {}
+    penalty_mode = penalty.get("penalty_mode", "none")
+    if penalty_mode not in {"none", "multiplicative", "additive"}:
+        raise ValueError(f"Unsupported penalty_mode: {penalty_mode!r}")
+
+    uses_distance_preferences = penalty_mode != "none"
+    if uses_distance_preferences:
+        try:
+            alpha = float(penalty["alpha"])
+            beta = float(penalty["beta"])
+        except KeyError as exc:
+            raise ValueError(
+                f"penalty_mode={penalty_mode!r} requires alpha and beta"
+            ) from exc
+    else:
+        # Neutral internal placeholders; raw-distance costs do not consume them.
+        alpha = 1.0
+        beta = 1.0
+
     vtypes = []
     for v in cfg["fleet"]["vehicle_types"]:
+        if uses_distance_preferences:
+            try:
+                lower_km = float(v["distance_band"]["lower_km"])
+                upper_km = float(v["distance_band"]["upper_km"])
+            except KeyError as exc:
+                raise ValueError(
+                    f"penalty_mode={penalty_mode!r} requires distance_band "
+                    f"for vehicle type {v.get('name', '<unknown>')!r}"
+                ) from exc
+        else:
+            lower_km = 0.0
+            upper_km = 0.0
+
         vtypes.append(VehicleConfig(
             name=v["name"],
             capacity=v["capacity"],
             max_speed_kmph=v["max_speed_kmph"],
             energy_kwh_per_km=v["energy_kwh_per_km"],
             fleet_size=v["fleet_size"],
-            lower_km=v["distance_band"]["lower_km"],
-            upper_km=v["distance_band"]["upper_km"],
-            fixed_cost_km_equiv=v["fixed_cost_km_equiv"],
+            lower_km=lower_km,
+            upper_km=upper_km,
+            fixed_cost_km_equiv=float(v.get("fixed_cost_km_equiv", 0.0)),
         ))
     tw = cfg["time_window"]
+    service = cfg.get("service_horizon") or tw
     buf_sec = tw.get("buffer_before_deadline_minutes", 0.0) * 60.0
     sc = cfg["solver_config"]
     bp = cfg["baseline_parameters"]
@@ -155,11 +205,18 @@ def load_config(path: str) -> ExperimentConfig:
             end_time_minutes=tw.get("end_time_minutes", 570),
             buffer_before_deadline_sec=buf_sec,
         ),
+        service_horizon=ServiceHorizonConfig(
+            start_time_minutes=service.get("start_time_minutes", 420),
+            end_time_minutes=service.get("end_time_minutes", 570),
+        ),
         time_limit_seconds=sc["time_limit_seconds"],
-        alpha=cfg["penalty_parameters"]["alpha"],
-        beta=cfg["penalty_parameters"]["beta"],
-        penalty_mode=cfg["penalty_parameters"].get("penalty_mode", "multiplicative"),
-        preference_scale_m=int(cfg["penalty_parameters"].get("preference_scale_m", 500)),
+        alpha=alpha,
+        beta=beta,
+        penalty_mode=penalty_mode,
+        preference_scale_m=int(
+            penalty.get("preference_scale_m", 500)
+            if uses_distance_preferences else 0
+        ),
         private_car_energy_kwh_per_km=bp["private_car_energy_kwh_per_km"],
         electricity_cost_per_kwh=em["electricity_cost_per_kwh"],
         grid_co2_kg_per_kwh=em["grid_co2_kg_per_kwh"],
@@ -240,8 +297,8 @@ def build_model(
       times computed at its own max_speed_kmph. This fixes the OR-Tools
       bug where all vehicles used the fastest speed for time feasibility.
 
-    • max_duration per vehicle type: set to the full service window
-      (e.g. 150 min). PyVRP's HGS automatically inserts depot returns
+    • max_duration per vehicle type: set to the full service horizon.
+      PyVRP's HGS automatically inserts depot returns
       when a vehicle would exceed this — native multi-trip, no virtual
       vehicles, no sequencing constraints.
 
@@ -251,12 +308,11 @@ def build_model(
     duration_matrices_per_type).
     """
 
-    service_start_sec = cfg.time_window.start_time_minutes * 60
-    service_end_sec   = cfg.time_window.end_time_minutes   * 60
-    # Depot window: slightly wider than service window so vehicles can
-    # depart just before first pickup and return just after last dropoff
-    depot_open  = max(0, service_start_sec - 30 * 60)
-    depot_close = service_end_sec + 30 * 60
+    horizon = cfg.operating_horizon
+    service_start_sec = horizon.start_time_minutes * 60
+    service_end_sec   = horizon.end_time_minutes   * 60
+    depot_open = service_start_sec
+    depot_close = service_end_sec
 
     # max_duration = full service window → enables multi-trip
     max_duration_sec = service_end_sec - service_start_sec
@@ -266,16 +322,9 @@ def build_model(
     if individual_mode:
         # window_assignment is List[Tuple[tw_early, tw_late]], -1,-1 = infeasible
         feasible_idx = [i for i, tw in enumerate(window_assignment) if tw[0] >= 0]
-        # Service window = span of all individual windows
-        all_early = [window_assignment[i][0] for i in feasible_idx]
-        all_late  = [window_assignment[i][1] for i in feasible_idx]
-        service_start_sec = min(all_early) if all_early else cfg.time_window.start_time_minutes * 60
-        service_end_sec   = max(all_late)  if all_late  else cfg.time_window.end_time_minutes   * 60
     else:
         # window_assignment is List[int] — index into windows_sec, -1 = infeasible
         feasible_idx = [i for i, w in enumerate(window_assignment) if w >= 0]
-        service_start_sec = cfg.time_window.start_time_minutes * 60
-        service_end_sec   = cfg.time_window.end_time_minutes   * 60
 
     n_feasible = len(feasible_idx)
     print(f"  Feasible commuters: {n_feasible}/{len(commuters)}")
@@ -763,7 +812,7 @@ def extract_results(
                 for k in range(len(raw_seq) - 1)
             )
 
-            # ── Penalised cost (metres) — for reconciliation with solver ──
+            # ── Routing cost (metres) — for reconciliation with solver ────
             # Uses the same cost matrix the solver used for this vehicle type.
             # Sum should equal result.best.distance() when all trips are summed.
             k = vtype_name_to_k[vtype_name]
@@ -984,25 +1033,26 @@ def extract_results(
 
     # ── Distance reconciliation ────────────────────────────────────────
     # Three quantities to compare:
-    #   (A) result.best.distance()  — PyVRP's own penalised cost total
-    #   (B) total_penalised_m       — our reconstruction using same cost matrices
+    #   (A) result.best.distance()  — PyVRP's routing-cost total
+    #   (B) total_penalised_m       — our reconstruction using the same matrices
     #   (C) total_vmt_mm / 1000     — raw physical road distance in metres
     #
     # (A) ≈ (B) means extraction is correct — we captured all arcs
-    # (B) > (C) is expected — penalties inflate cost over physical distance
-    # Report (C) as VMT in the paper; (A)=(B) is the validation check.
+    # Report (C) as physical VMT; (A)≈(B) is the validation check.
     solver_dist_m   = result.best.distance()
     extracted_pen_m = total_penalised_m
     extracted_raw_m = raw_total_vmt_mm / 1_000.0   # mm → metres
     match_pct = 100.0 * extracted_pen_m / max(1, solver_dist_m)
+    objective_wording, gap_wording = routing_cost_log_wording(cfg.penalty_mode)
 
     print(f"\n  Distance reconciliation (validation):")
-    print(f"    (A) Solver penalised distance:     {solver_dist_m/1000:.2f} km")
-    print(f"    (B) Extracted penalised distance:  {extracted_pen_m/1000:.2f} km  "
+    print(f"    (A) Solver objective distance:     {solver_dist_m/1000:.2f} km "
+          f"({objective_wording})")
+    print(f"    (B) Extracted routing-cost distance: {extracted_pen_m/1000:.2f} km  "
           f"({match_pct:.1f}% of solver)")
     print(f"    (C) Extracted raw road distance:   {extracted_raw_m/1000:.2f} km")
     if abs(match_pct - 100.0) < 2.0:
-        print(f"    ✓ (A)≈(B): extraction is correct. Gap (B)→(C) is penalty effect.")
+        print(f"    ✓ (A)≈(B): extraction is correct. {gap_wording}")
     else:
         print(f"    ⚠  (A)≠(B): extraction may be missing arcs. Investigate trip.visits().")
 
@@ -1304,7 +1354,8 @@ def main():
         dist_m, dur_sec_by_speed, node_to_idx, station_idx
     )
 
-    service_min = cfg.time_window.end_time_minutes - cfg.time_window.start_time_minutes
+    horizon = cfg.operating_horizon
+    service_min = horizon.end_time_minutes - horizon.start_time_minutes
     tw_mode_str = ("Individual (drop_off_latest per commuter)"
                    if cfg.time_window.mode == "individual"
                    else f"Fixed slots ({cfg.time_window.interval_minutes}-min intervals, OR-Tools comparable)")
@@ -1322,15 +1373,17 @@ def main():
                   f"{eff_start_sec//3600:02d}:{(eff_start_sec%3600)//60:02d} – "
                   f"{eff_end_sec//3600:02d}:{(eff_end_sec%3600)//60:02d} "
                   f"({eff_min} min, from commuter windows)")
+    print(f"  Service horizon: "
+          f"{horizon.start_time_minutes//60:02d}:"
+          f"{horizon.start_time_minutes%60:02d} – "
+          f"{horizon.end_time_minutes//60:02d}:"
+          f"{horizon.end_time_minutes%60:02d} "
+          f"({service_min} min)")
+    print(f"  max_duration per vehicle: {service_min} min → multi-trip handled natively by PyVRP")
+    if cfg.penalty_mode == "none":
+        print("  Per-vehicle cost matrices: ✓ (raw distance)")
     else:
-        print(f"  Service window: "
-              f"{cfg.time_window.start_time_minutes//60:02d}:"
-              f"{cfg.time_window.start_time_minutes%60:02d} – "
-              f"{cfg.time_window.end_time_minutes//60:02d}:"
-              f"{cfg.time_window.end_time_minutes%60:02d} "
-              f"({service_min} min)")
-    print(f"  max_duration per vehicle: {(cfg.time_window.end_time_minutes - cfg.time_window.start_time_minutes)} min → multi-trip handled natively by PyVRP")
-    print(f"  Per-vehicle cost matrices: ✓ (mode={cfg.penalty_mode}, scale={cfg.preference_scale_m}m)")
+        print(f"  Per-vehicle cost matrices: ✓ (mode={cfg.penalty_mode}, scale={cfg.preference_scale_m}m)")
     print(f"  Per-vehicle duration matrices: ✓ (speed-correct time windows)")
 
     # ── 7. Solve ───────────────────────────────────────────────────────
@@ -1352,20 +1405,14 @@ def main():
     raw_dist_mm_sub = dist_mm_raw[np.ix_(idx_arr2, idx_arr2)]
 
     # ── Distance reconciliation note ───────────────────────────────────
-    # PyVRP's solution.distance() reports the SUM OF PENALISED ARC COSTS
-    # in metres — the quantity the solver actually minimised. This includes
-    # the smooth distance-band penalty multiplier per vehicle type, so it
-    # is NOT physical road distance.
-    #
-    # Our extracted VMT uses raw road distances (dist_mm_raw ÷ 1e6 = km),
-    # which is the physically meaningful metric for energy and emissions.
-    # These two numbers will differ whenever penalties are active.
-    #
-    # The ratio (solver_distance / extracted_vmt_m) is the effective
-    # average penalty multiplier across all arcs in the solution.
+    # PyVRP's solution.distance() reports the routing-cost total in metres.
+    # Under raw-distance mode this is raw distance; under an active penalty
+    # mode it is penalty-adjusted. Physical VMT is calculated separately from
+    # the raw road-distance matrix for energy and emissions.
     solver_dist_m = result.best.distance()
+    objective_wording, _ = routing_cost_log_wording(cfg.penalty_mode)
     print(f"  Solver objective distance: {solver_dist_m/1000:.2f} km "
-          f"(penalised cost, vehicle-type weighted)")
+          f"({objective_wording})")
     print(f"  Physical VMT will be computed from raw road distances below")
 
     metrics = extract_results(

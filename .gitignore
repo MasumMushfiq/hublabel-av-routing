@@ -81,7 +81,7 @@ experiments/scripts/__pycache__/
 
 # These older experiment folders look local/generated.
 # Remove these two lines later if you want to version cleaned scripts/configs from them.
-experiments_ortools/
-experiments_testing_phase/
+archived_experiments/
 
 tmp/
+dataset/OSM_DATA/*.pbf

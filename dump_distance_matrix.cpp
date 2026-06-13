@@ -192,6 +192,17 @@ static void write_npy_int64(const std::string& path,
 int main(int argc, char** argv) {
     Args args = parse_args(argc, argv);
 
+    // Validate the commuter schema before loading large routing artifacts.
+    std::vector<int> commuter_nodes;
+    try {
+        commuter_nodes = read_commuter_nodes(args.nodes_csv);
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: Invalid matrix input CSV: " << e.what() << "\n"
+                  << "Expected a final commuter CSV with an 'origin_node' column, "
+                  << "not a candidate-node pool.\n";
+        return 1;
+    }
+
     // 1. Load hub labels
     std::cerr << "Loading hub labels: " << args.labels_prefix << "\n";
     if (!init_distance_labels(args.labels_prefix)) {
@@ -203,8 +214,7 @@ int main(int argc, char** argv) {
     auto edge_tbl = load_speed_table(args.speed_table);
     std::cerr << "  Loaded " << edge_tbl.size() << " edges\n";
 
-    // 3. Read commuter nodes
-    auto commuter_nodes = read_commuter_nodes(args.nodes_csv);
+    // 3. Report the already-validated commuter nodes
     int N = static_cast<int>(commuter_nodes.size());
     int M = N + 1;  // depot + N commuters
     std::cerr << "Commuters: " << N << "  →  matrix size: " << M << "×" << M << "\n";

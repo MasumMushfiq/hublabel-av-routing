@@ -1,0 +1,90 @@
+{
+  "experiment_name": "unified_time_window_vrp",
+  "description": "Unified VRP with configurable time windows",
+
+  "fleet": {
+    "vehicle_types": [
+      {
+        "name": "Scooter",
+        "capacity": 1,
+        "max_speed_kmph": 30.0,
+        "fuel_l_per_100km": 2.0,
+        "co2_kg_per_liter": 2.31,
+        "fleet_size": 30,
+        "distance_band": {
+          "lower_km": 0.0,
+          "upper_km": 2.0
+        },
+        "fixed_cost_km_equiv": 1.0
+      },
+      {
+        "name": "Moped",
+        "capacity": 2,
+        "max_speed_kmph": 45.0,
+        "fuel_l_per_100km": 3.0,
+        "co2_kg_per_liter": 2.31,
+        "fleet_size": 30,
+        "distance_band": {
+          "lower_km": 1.5,
+          "upper_km": 6.0
+        },
+        "fixed_cost_km_equiv": 1.5
+      },
+      {
+        "name": "Car",
+        "capacity": 4,
+        "max_speed_kmph": 80.0,
+        "fuel_l_per_100km": 11.1,
+        "co2_kg_per_liter": 2.31,
+        "fleet_size": 20,
+        "distance_band": {
+          "lower_km": 4.0,
+          "upper_km": 12.0
+        },
+        "fixed_cost_km_equiv": 2.5
+      },
+      {
+        "name": "Minibus",
+        "capacity": 6,
+        "max_speed_kmph": 70.0,
+        "fuel_l_per_100km": 13.0,
+        "co2_kg_per_liter": 2.68,
+        "fleet_size": 10,
+        "distance_band": {
+          "lower_km": 8.0,
+          "upper_km": 20.0
+        },
+        "fixed_cost_km_equiv": 5.0
+      }
+    ]
+  },
+
+  "time_window": {
+    "mode": "fixed_slots", 
+    "interval_minutes": 20,
+    "start_time_minutes": 420,
+    "end_time_minutes": 570,
+    "buffer_before_deadline_minutes": 3.0
+  },
+
+  "penalty_parameters": {
+    "alpha": 0.8,
+    "beta": 2.0
+  },
+
+  "solver_config": {
+    "time_limit_seconds": 300,
+    "log_search": true,
+    "allow_partial_solution": true,
+    "first_solution_strategy": "PATH_CHEAPEST_ARC",
+    "local_search_metaheuristic": "GUIDED_LOCAL_SEARCH"
+  },
+
+  "baseline_parameters": {
+    "private_car_fuel_l_per_100km": 11.1,
+    "private_car_co2_kg_per_liter": 2.31,
+    "private_car_speed_kmph": 60.0,
+    "source_fuel": "ABS Survey of Motor Vehicle Use (2020)",
+    "source_co2": "DCCEEW National Greenhouse Accounts Factors (2023)"
+  }
+}

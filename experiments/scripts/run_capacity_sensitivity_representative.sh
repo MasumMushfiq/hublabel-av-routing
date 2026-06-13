@@ -64,7 +64,7 @@ mkdir -p "$CONFIG_ROOT"
 COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters_residential.csv}"
 STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
 MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_residential_matrix}"
-BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/base_config.json}"
+BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/legacy_melton_base_config.json}"
 if [[ "$BASE_CONFIG" != /* ]]; then
   BASE_CONFIG="$ROOT/$BASE_CONFIG"
 fi

@@ -1,0 +1,75 @@
+{
+  "experiment_name": "footscray_base_pyvrp_first_mile_av",
+  "description": "Footscray reference configuration for corrected residential-origin first-mile AV experiments.",
+  "fleet": {
+    "vehicle_types": [
+      {
+        "name": "Scooter",
+        "capacity": 1,
+        "max_speed_kmph": 25.0,
+        "energy_kwh_per_km": 0.016,
+        "fleet_size": 20
+      },
+      {
+        "name": "Moped",
+        "capacity": 2,
+        "max_speed_kmph": 45.0,
+        "energy_kwh_per_km": 0.058,
+        "fleet_size": 10
+      },
+      {
+        "name": "Car",
+        "capacity": 4,
+        "max_speed_kmph": 80.0,
+        "energy_kwh_per_km": 0.155,
+        "fleet_size": 5
+      },
+      {
+        "name": "Minibus",
+        "capacity": 10,
+        "max_speed_kmph": 70.0,
+        "energy_kwh_per_km": 0.330,
+        "fleet_size": 2
+      }
+    ]
+  },
+  "time_window": {
+    "mode": "fixed_slots",
+    "interval_minutes": 20,
+    "start_time_minutes": 420,
+    "end_time_minutes": 570
+  },
+  "demand_window": {
+    "start_time_minutes": 420,
+    "end_time_minutes": 570
+  },
+  "service_horizon": {
+    "start_time_minutes": 390,
+    "end_time_minutes": 570
+  },
+  "solver_config": { "time_limit_seconds": 300 },
+  "baseline_parameters": {
+    "private_car_energy_kwh_per_km": 0.155,
+    "private_car_speed_kmph": 80.0
+  },
+  "energy_model": {
+    "electricity_cost_per_kwh": 0.27,
+    "grid_co2_kg_per_kwh": 0.78,
+    "emission_factor_region": "Victoria",
+    "emission_factor_scope": "Scope 2 location-based"
+  },
+  "cost_model": {
+    "fixed_cost_per_vehicle": {
+      "Scooter": 1.98,
+      "Moped": 4.02,
+      "Car": 39.96,
+      "Minibus": 42.59
+    },
+    "maintenance_cost_per_km": {
+      "Scooter": 0.06,
+      "Moped": 0.04,
+      "Car": 0.04,
+      "Minibus": 0.25
+    }
+  }
+}

@@ -31,7 +31,7 @@ MYKI COLUMN MAPPING  (pipe-delimited, 9 columns, 0-based index)
   Col 1  BusinessDate    YYYY-MM-DD
   Col 2  DateTime        YYYY-MM-DD HH:MM:SS  <- tap-on timestamp
   Col 3  CardID          anonymised card identifier
-  Col 7  Legacy Melton-compatible station/location grouping
+  Col 7  Legacy corridor-like grouping (not station-specific)
   Col 8  DimStopLocation.StopLocationID
 
 DEFAULT MELTON STATION FILTER IDs  (for legacy column 7 behavior)
@@ -60,7 +60,7 @@ COL_CARD_ID     = 3
 WEEKDAY_CODES   = {0, 1, 2, 3, 4}   # Mon-Fri
 
 STOP_ID_COLUMN_DESCRIPTIONS = {
-    7: "legacy station/location grouping",
+    7: "legacy corridor-like grouping (not station-specific)",
     8: "DimStopLocation.StopLocationID",
 }
 
@@ -111,25 +111,74 @@ def parse_stop_ids(value: str) -> tuple[int, ...]:
     return tuple(stop_ids)
 
 
-def load_peak_window(config_path: str) -> tuple[str, str]:
-    """
-    Read peak window from the experiment config JSON.
-    Returns (peak_start_hhmm, peak_end_hhmm).
+def add_stop_id_column_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--stop-id-column",
+        type=int,
+        choices=(7, 8),
+        default=8,
+        help=(
+            "Zero-based ScanOnTransaction column used with --stop-ids: "
+            "8 is DimStopLocation.StopLocationID, recommended/default for "
+            "station-level platform demand; 7 has legacy/corridor-like behavior "
+            "and should only be used to reproduce archived Melton experiments."
+        ),
+    )
 
-    Only reads start_time_minutes and end_time_minutes from time_window.
-    buffer_before_deadline_minutes is the solver grace parameter (Aamir),
-    NOT the pickup window width — do not read it here.
+
+def mins_to_hhmm(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def load_config_windows(config_path: str) -> dict[str, str | None]:
+    """
+    Read the Myki demand window and optional routing horizon from config.
+
+    New configs should define demand_window. Legacy configs fall back to
+    time_window so archived generation commands retain their old behavior.
     """
     with open(config_path) as f:
         cfg = json.load(f)
-    tw = cfg["time_window"]
 
-    def mins_to_hhmm(m: int) -> str:
-        return f"{m // 60:02d}:{m % 60:02d}"
+    time_window = cfg.get("time_window")
+    demand_window = cfg.get("demand_window")
+    if demand_window is not None:
+        extraction_window = demand_window
+        source = "demand_window"
+    elif time_window is not None:
+        extraction_window = time_window
+        source = "time_window_fallback"
+    else:
+        raise KeyError("config requires demand_window or time_window")
 
-    start = mins_to_hhmm(tw["start_time_minutes"])
-    end   = mins_to_hhmm(tw["end_time_minutes"])
-    return start, end
+    service_horizon = cfg.get("service_horizon") or time_window
+    service_start = None
+    service_end = None
+    if service_horizon is not None:
+        service_start = mins_to_hhmm(service_horizon["start_time_minutes"])
+        service_end = mins_to_hhmm(service_horizon["end_time_minutes"])
+
+    deadline_start = None
+    deadline_end = None
+    if time_window is not None:
+        deadline_start = mins_to_hhmm(time_window["start_time_minutes"])
+        deadline_end = mins_to_hhmm(time_window["end_time_minutes"])
+
+    return {
+        "demand_start": mins_to_hhmm(extraction_window["start_time_minutes"]),
+        "demand_end": mins_to_hhmm(extraction_window["end_time_minutes"]),
+        "demand_window_source": source,
+        "service_start": service_start,
+        "service_end": service_end,
+        "deadline_start": deadline_start,
+        "deadline_end": deadline_end,
+    }
+
+
+def load_peak_window(config_path: str) -> tuple[str, str]:
+    """Return the Myki extraction window, retaining the existing helper API."""
+    windows = load_config_windows(config_path)
+    return str(windows["demand_start"]), str(windows["demand_end"])
 
 
 # ── Step 1: Find files ─────────────────────────────────────────────────────
@@ -408,6 +457,11 @@ def write_metadata(metadata_path: str,
                    date: str | None,
                    peak_start: str,
                    peak_end: str,
+                   peak_window_source: str,
+                   service_start: str | None,
+                   service_end: str | None,
+                   deadline_start: str | None,
+                   deadline_end: str | None,
                    pickup_buffer_min: float,
                    av_speed_kmh: float,
                    seed: int,
@@ -428,6 +482,9 @@ def write_metadata(metadata_path: str,
         "source": "Myki ScanOnTransaction",
         "station_name": station_name,
         "destination_node": destination_node,
+        "stop_ids": sorted(stop_ids),
+        "stop_id_column": stop_id_column,
+        "stop_id_column_description": stop_id_column_description,
         "myki_stop_ids": sorted(stop_ids),
         "source_stop_filter": {
             "column": stop_id_column_description,
@@ -450,11 +507,31 @@ def write_metadata(metadata_path: str,
         "date": date,
         "peak_start": peak_start,
         "peak_end": peak_end,
+        "demand_window": {
+            "start": peak_start,
+            "end": peak_end,
+            "source": peak_window_source,
+        },
+        "service_horizon": (
+            {"start": service_start, "end": service_end}
+            if service_start is not None and service_end is not None
+            else None
+        ),
+        "time_window": (
+            {"start": deadline_start, "end": deadline_end,
+             "meaning": "fixed station-arrival deadline slots"}
+            if deadline_start is not None and deadline_end is not None
+            else None
+        ),
+        "pickup_buffer_minutes": pickup_buffer_min,
         "pickup_buffer_min": pickup_buffer_min,
         "av_speed_kmh": av_speed_kmh,
         "seed": seed,
         "tap_ons_extracted": tap_ons_extracted,
+        "reachable_origins": reachable_origins_generated,
         "reachable_origins_generated": reachable_origins_generated,
+        "feasible_commuters": commuters_written,
+        "output_commuters": commuters_written,
         "commuters_written": commuters_written,
         "origin_candidate_source": origin_candidate_source or "road_network_nodes",
         "origin_sampling_backend": "build_commuters_reachable",
@@ -485,6 +562,7 @@ def write_metadata(metadata_path: str,
         "output_csv": output_csv,
     }
     if residential_candidate_metadata:
+        metadata["residential_candidate_metadata"] = residential_candidate_metadata
         metadata["residential_candidate_metadata_file"] = residential_candidate_metadata
     Path(metadata_path).parent.mkdir(parents=True, exist_ok=True)
     with open(metadata_path, "w", encoding="utf-8") as f:
@@ -510,8 +588,8 @@ def main():
     p.add_argument("--out",            default="files/inputs/commuters.csv")
     p.add_argument("--config",         required=True,
                    help="Experiment config JSON (same file used by PyVRP). "
-                        "Reads start_time_minutes and end_time_minutes from "
-                        "time_window block — single source of truth for peak window.")
+                        "Reads the Myki extraction window from demand_window, "
+                        "falling back to time_window for legacy configs.")
     p.add_argument("--year",           type=int, default=None)
     p.add_argument("--week",           type=int, default=None)
     p.add_argument("--date",           default=None,
@@ -525,10 +603,7 @@ def main():
                         "to select station tap-ons. Defaults to Melton's "
                         "current IDs for backward compatibility: "
                         "18,19980,21131,21132,21183,21184,21185.")
-    p.add_argument("--stop-id-column", type=int, choices=(7, 8), default=7,
-                   help="Zero-based ScanOnTransaction column used with "
-                        "--stop-ids: 7 preserves legacy Melton behavior; "
-                        "8 is DimStopLocation.StopLocationID (default: 7).")
+    add_stop_id_column_argument(p)
     p.add_argument("--pickup-buffer",  type=float, default=30.0,
                    help="Pickup window width in minutes: pickup_earliest = "
                         "drop_off_latest - N. Separate from solver grace period. "
@@ -548,7 +623,9 @@ def main():
     coord_nodes_file = args.coord_nodes_file or args.nodes_file
     stop_ids = set(args.stop_ids)
 
-    peak_start_str, peak_end_str = load_peak_window(args.config)
+    config_windows = load_config_windows(args.config)
+    peak_start_str = str(config_windows["demand_start"])
+    peak_end_str = str(config_windows["demand_end"])
     peak_start    = datetime.strptime(peak_start_str, "%H:%M").time()
     peak_end      = datetime.strptime(peak_end_str,   "%H:%M").time()
     pickup_buffer = args.pickup_buffer
@@ -560,7 +637,12 @@ def main():
     if not files:
         sys.exit("ERROR: No ScanOnTransaction files found.")
     print(f"  Config:  {args.config}")
-    print(f"  Window:  {peak_start_str} – {peak_end_str}  (pickup buffer {pickup_buffer} min)")
+    print(f"  Myki demand window: {peak_start_str} – {peak_end_str} "
+          f"(source: {config_windows['demand_window_source']})")
+    if config_windows["service_start"] is not None:
+        print(f"  Service horizon:    {config_windows['service_start']} – "
+              f"{config_windows['service_end']}")
+    print(f"  Pickup buffer:      {pickup_buffer} min")
     print(f"  Stop IDs: {','.join(str(x) for x in args.stop_ids)}")
     print(f"  Stop ID column: {args.stop_id_column} "
           f"({STOP_ID_COLUMN_DESCRIPTIONS[args.stop_id_column]})")
@@ -616,6 +698,11 @@ def main():
         date=args.date,
         peak_start=peak_start_str,
         peak_end=peak_end_str,
+        peak_window_source=str(config_windows["demand_window_source"]),
+        service_start=config_windows["service_start"],
+        service_end=config_windows["service_end"],
+        deadline_start=config_windows["deadline_start"],
+        deadline_end=config_windows["deadline_end"],
         pickup_buffer_min=pickup_buffer,
         av_speed_kmh=args.av_speed_kmh,
         seed=args.seed,

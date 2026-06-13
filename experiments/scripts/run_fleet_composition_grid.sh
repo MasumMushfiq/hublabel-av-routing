@@ -32,7 +32,7 @@
 #   OUTPUT_DIR           output root (default: experiments/results/fleet_composition_grid_224seats)
 #                        RESULTS_DIR is also accepted as a legacy alias
 #   CONFIGS_DIR          configs output dir (default: OUTPUT_DIR/configs)
-#   BASE_CONFIG          canonical config template (default: config/base_config.json)
+#   BASE_CONFIG          legacy Melton config template (default: config/legacy_melton_base_config.json)
 #   COMMUTERS_CSV        commuter demand file (default: $ROOT/files/inputs/commuters_residential.csv)
 #   MATRICES_DIR         distance/duration matrix dir (default: $ROOT/dataset/MELTON/melton_residential_matrix)
 #   STATIONS_CSV         station file (default: $ROOT/files/inputs/stations.csv)
@@ -65,7 +65,7 @@ PYVRP_SCRIPT="$ROOT/python/simulate_first_mile_pyvrp.py"
 COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters_residential.csv}"
 STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
 MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_residential_matrix}"
-BASE_CONFIG=${BASE_CONFIG:-config/base_config.json}
+BASE_CONFIG=${BASE_CONFIG:-config/legacy_melton_base_config.json}
 if [[ "$BASE_CONFIG" != /* ]]; then
     BASE_CONFIG="$ROOT/$BASE_CONFIG"
 fi

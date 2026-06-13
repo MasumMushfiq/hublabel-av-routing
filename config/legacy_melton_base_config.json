@@ -1,6 +1,6 @@
 {
-  "experiment_name": "base_pyvrp_first_mile_av",
-  "description": "Canonical base configuration for PyVRP first-mile AV feeder experiments. Experiment runners should copy this config and modify only experiment-specific fields.",
+  "experiment_name": "legacy_melton_base_pyvrp_first_mile_av",
+  "description": "Legacy Melton-era base configuration retained for archived and reproducibility workflows.",
 
   "fleet": {
     "vehicle_types": [

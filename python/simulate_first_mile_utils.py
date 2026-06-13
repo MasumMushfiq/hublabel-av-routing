@@ -42,6 +42,11 @@ class TimeWindowConfig:
     buffer_before_deadline_sec: float
 
 @dataclass
+class ServiceHorizonConfig:
+    start_time_minutes: int
+    end_time_minutes: int
+
+@dataclass
 class CostModel:
     """
     Cost parameters for post-simulation fleet comparison.
@@ -78,9 +83,20 @@ class ExperimentConfig:
     electricity_cost_per_kwh: float
     grid_co2_kg_per_kwh: float
     private_car_speed_kmph: float
+    service_horizon: Optional[ServiceHorizonConfig] = None
     penalty_mode: str = "multiplicative"
     preference_scale_m: int = 500
     cost_model: Optional[CostModel] = None
+
+    @property
+    def operating_horizon(self) -> ServiceHorizonConfig:
+        """Return the explicit service horizon or the legacy time-window span."""
+        if self.service_horizon is not None:
+            return self.service_horizon
+        return ServiceHorizonConfig(
+            start_time_minutes=self.time_window.start_time_minutes,
+            end_time_minutes=self.time_window.end_time_minutes,
+        )
 
 
 @dataclass
