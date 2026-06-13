@@ -1,0 +1,42 @@
+{
+  "source": "Myki ScanOnTransaction",
+  "station_name": "Melton",
+  "destination_node": 19858,
+  "myki_stop_ids": [
+    18,
+    19980,
+    21131,
+    21132,
+    21183,
+    21184,
+    21185
+  ],
+  "myki_root": "dataset/MYKI/Samp_9",
+  "nodes_file": "files/inputs/melton_nodes_lat_lon.csv",
+  "cpp_bin": "bin/build_commuters_reachable",
+  "labels": "dataset/MELTON/melton_dist",
+  "config": "config/base_config.json",
+  "year": 2018,
+  "week": 26,
+  "date": "2018-06-25",
+  "peak_start": "07:00",
+  "peak_end": "09:30",
+  "pickup_buffer_min": 30.0,
+  "av_speed_kmh": 25.0,
+  "seed": 42,
+  "tap_ons_extracted": 1465,
+  "reachable_origins_generated": 1465,
+  "commuters_written": 1465,
+  "origin_candidate_source": "road_network_nodes",
+  "origin_sampling_backend": "build_commuters_reachable",
+  "origin_sampling_method": "farthest_point_ordering_then_bidirectional_reachability",
+  "residential_address_based": false,
+  "temporal_demand_source": "Myki tap-on times",
+  "temporal_spatial_pairing": "seeded_random_pairing",
+  "origin_generation_method": "reachable_random_pairing_with_haversine_feasibility_filter",
+  "feasibility_filter": {
+    "speed_kmh": 25.0,
+    "description": "Drops origin/time-window pairs when haversine travel time at speed_kmh exceeds the pickup window width."
+  },
+  "output_csv": "files/inputs/commuters.csv"
+}

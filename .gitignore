@@ -84,3 +84,4 @@ experiments/scripts/__pycache__/
 experiments_ortools/
 experiments_testing_phase/
 
+tmp/
