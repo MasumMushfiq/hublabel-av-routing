@@ -31,9 +31,10 @@ MYKI COLUMN MAPPING  (pipe-delimited, 9 columns, 0-based index)
   Col 1  BusinessDate    YYYY-MM-DD
   Col 2  DateTime        YYYY-MM-DD HH:MM:SS  <- tap-on timestamp
   Col 3  CardID          anonymised card identifier
-  Col 7  StopLocationID  <- boarding stop
+  Col 7  Legacy Melton-compatible station/location grouping
+  Col 8  DimStopLocation.StopLocationID
 
-DEFAULT MELTON STATION STOP IDs  (from DimStopLocation)
+DEFAULT MELTON STATION FILTER IDs  (for legacy column 7 behavior)
   18, 19980, 21131, 21132, 21183, 21184, 21185
 """
 
@@ -56,8 +57,12 @@ TRAIN_MODE      = 2
 COL_MODE        = 0
 COL_DATETIME    = 2
 COL_CARD_ID     = 3
-COL_STOP_ID     = 7
 WEEKDAY_CODES   = {0, 1, 2, 3, 4}   # Mon-Fri
+
+STOP_ID_COLUMN_DESCRIPTIONS = {
+    7: "legacy station/location grouping",
+    8: "DimStopLocation.StopLocationID",
+}
 
 _R_KM = 6371.0088
 _DEFAULT_AV_SPEED_KMH = 25.0   # conservative speed for feasibility check
@@ -77,7 +82,7 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 def parse_stop_ids(value: str) -> tuple[int, ...]:
     """
-    Parse a comma-separated list of Myki StopLocationID integers.
+    Parse comma-separated station/location identifier integers.
 
     Designed for argparse's type= hook so invalid values produce a clear
     command-line error before the data pipeline starts.
@@ -101,7 +106,7 @@ def parse_stop_ids(value: str) -> tuple[int, ...]:
 
     if not stop_ids:
         raise argparse.ArgumentTypeError(
-            "invalid --stop-ids: provide at least one StopLocationID"
+            "invalid --stop-ids: provide at least one station/location identifier"
         )
     return tuple(stop_ids)
 
@@ -166,7 +171,8 @@ def extract_tap_ons(files: list[Path],
                     peak_end: time,
                     pickup_buffer_min: float,
                     date_filter: str | None,
-                    stop_ids: tuple[int, ...]) -> list[dict]:
+                    stop_ids: tuple[int, ...],
+                    stop_id_column: int) -> list[dict]:
     """
     Returns one record per unique card_id (earliest tap-on wins).
 
@@ -189,7 +195,7 @@ def extract_tap_ons(files: list[Path],
                     try:
                         if int(cols[COL_MODE]) != TRAIN_MODE:
                             continue
-                        if int(cols[COL_STOP_ID]) not in stop_ids:
+                        if int(cols[stop_id_column]) not in stop_ids:
                             continue
                     except ValueError:
                         continue
@@ -409,6 +415,7 @@ def write_metadata(metadata_path: str,
                    origin_candidate_source: str | None,
                    residential_candidate_metadata: str | None,
                    stop_ids: tuple[int, ...],
+                   stop_id_column: int,
                    tap_ons_extracted: int,
                    reachable_origins_generated: int,
                    commuters_written: int) -> None:
@@ -416,13 +423,16 @@ def write_metadata(metadata_path: str,
         "farthest": "farthest_point_ordering_then_bidirectional_reachability",
         "random": "random_ordering_then_bidirectional_reachability",
     }
+    stop_id_column_description = STOP_ID_COLUMN_DESCRIPTIONS[stop_id_column]
     metadata = {
         "source": "Myki ScanOnTransaction",
         "station_name": station_name,
         "destination_node": destination_node,
         "myki_stop_ids": sorted(stop_ids),
         "source_stop_filter": {
-            "column": "StopLocationID",
+            "column": stop_id_column_description,
+            "column_index": stop_id_column,
+            "column_description": stop_id_column_description,
             "stop_ids": sorted(stop_ids),
             "default_melton_stop_ids": list(DEFAULT_MELTON_STOP_IDS),
             "uses_default_melton_stop_ids": (
@@ -511,10 +521,14 @@ def main():
                         "Melton for backward compatibility.")
     p.add_argument("--stop-ids",       type=parse_stop_ids,
                    default=DEFAULT_MELTON_STOP_IDS,
-                   help="Comma-separated Myki StopLocationID integers used "
+                   help="Comma-separated station/location identifier integers used "
                         "to select station tap-ons. Defaults to Melton's "
                         "current IDs for backward compatibility: "
                         "18,19980,21131,21132,21183,21184,21185.")
+    p.add_argument("--stop-id-column", type=int, choices=(7, 8), default=7,
+                   help="Zero-based ScanOnTransaction column used with "
+                        "--stop-ids: 7 preserves legacy Melton behavior; "
+                        "8 is DimStopLocation.StopLocationID (default: 7).")
     p.add_argument("--pickup-buffer",  type=float, default=30.0,
                    help="Pickup window width in minutes: pickup_earliest = "
                         "drop_off_latest - N. Separate from solver grace period. "
@@ -548,6 +562,8 @@ def main():
     print(f"  Config:  {args.config}")
     print(f"  Window:  {peak_start_str} – {peak_end_str}  (pickup buffer {pickup_buffer} min)")
     print(f"  Stop IDs: {','.join(str(x) for x in args.stop_ids)}")
+    print(f"  Stop ID column: {args.stop_id_column} "
+          f"({STOP_ID_COLUMN_DESCRIPTIONS[args.stop_id_column]})")
     print(f"  Files:   {len(files)}")
     if args.date:
         print(f"  Date:    {args.date}")
@@ -558,6 +574,7 @@ def main():
         pickup_buffer,
         date_filter=args.date,
         stop_ids=stop_ids,
+        stop_id_column=args.stop_id_column,
     )
     if not myki_rows:
         sys.exit("ERROR: No tap-ons matched filters.")
@@ -606,6 +623,7 @@ def main():
         origin_candidate_source=args.origin_candidate_source,
         residential_candidate_metadata=args.residential_candidate_metadata,
         stop_ids=args.stop_ids,
+        stop_id_column=args.stop_id_column,
         tap_ons_extracted=len(myki_rows),
         reachable_origins_generated=len(cpp_rows),
         commuters_written=len(merged),

@@ -101,6 +101,7 @@ Current key inputs:
 --date
 --station-name
 --stop-ids
+--stop-id-column 7|8
 --pickup-buffer
 --av-speed-kmh
 --seed
@@ -110,13 +111,29 @@ Current key inputs:
 
 `--station-name` is a metadata label for the selected station and defaults to `Melton` for backward compatibility.
 
-`--stop-ids` is a comma-separated list of Myki `StopLocationID` values used to select station tap-ons. For backward compatibility, omitting `--stop-ids` uses the current Melton default IDs:
+`--stop-ids` is a comma-separated list of station/location identifier values used to select station tap-ons from the column chosen by `--stop-id-column`. For backward compatibility, omitting `--stop-ids` uses the current Melton default IDs:
 
 ```text
 18,19980,21131,21132,21183,21184,21185
 ```
 
-Caulfield and Pakenham transferability/robustness runs must pass their station-specific Myki `StopLocationID` values explicitly and should set `--station-name` accordingly.
+`--stop-id-column` selects the zero-based `ScanOnTransaction` column used for station filtering:
+
+- column `7` is the legacy Melton-compatible station/location grouping and is the default;
+- column `8` contains the actual `DimStopLocation.StopLocationID` values from `stop_locations.txt`.
+
+The completed canonical Melton demand uses column `7`. Existing Melton commands should continue to omit `--stop-id-column` or pass `--stop-id-column 7`; Melton should not be regenerated from column `8`.
+
+Caulfield and Pakenham transferability/robustness runs must use column `8`, pass their station-specific `DimStopLocation.StopLocationID` values explicitly, and set `--station-name` accordingly. Verified values for the Monday `2018-06-25`, Week26 morning-peak sample are:
+
+| Station | Column-8 platform StopLocationID | Raw tap-ons | Unique cards |
+|---|---:|---:|---:|
+| Caulfield | `19943` | 240 | 239 |
+| Pakenham | `19880` | 63 | 63 |
+
+Alternative platform IDs also exist in the stop-location table: `22248` for Caulfield and `22252` for Pakenham. Both had zero tap-ons in the inspected Week26 Monday morning-peak sample and should not be used for that sample.
+
+For reference, the preserved Melton canonical filter observed column-7 value `18` with 1484 raw tap-ons and 1465 unique cards on the same date and peak window. Melton platform ID `19980` had zero column-8 tap-ons in that sample.
 
 `--nodes-file` is the origin candidate pool passed to `build_commuters_reachable`. Main Melton experiments should use `files/inputs/melton_residential_candidate_nodes.csv`. `--coord-nodes-file` is the full node-coordinate lookup used only for distance-aware pairing and the haversine feasibility filter; if omitted, it defaults to `--nodes-file` for backward compatibility.
 
@@ -125,6 +142,7 @@ Current metadata should record:
 - station/source information,
 - destination node,
 - Myki station stop IDs used for tap-on filtering,
+- selected ScanOnTransaction stop-ID column index and description,
 - Myki root,
 - nodes file,
 - coordinate lookup nodes file,
