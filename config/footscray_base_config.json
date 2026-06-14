@@ -1,6 +1,6 @@
 {
   "experiment_name": "footscray_base_pyvrp_first_mile_av",
-  "description": "Footscray reference configuration for corrected residential-origin first-mile AV experiments.",
+  "description": "Footscray reference configuration for residential-origin first-mile AV experiments.",
   "fleet": {
     "vehicle_types": [
       {
@@ -61,9 +61,9 @@
   "cost_model": {
     "fixed_cost_per_vehicle": {
       "Scooter": 1.98,
-      "Moped": 4.02,
-      "Car": 39.96,
-      "Minibus": 42.59
+      "Moped": 3.42,
+      "Car": 33.96,
+      "Minibus": 55.23
     },
     "maintenance_cost_per_km": {
       "Scooter": 0.06,

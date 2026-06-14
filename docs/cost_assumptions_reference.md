@@ -1,9 +1,9 @@
 # Electric AV Fleet Cost Assumptions Reference
 
-**Project:** Heterogeneous electric AV feeder fleet for first-mile access to Melton Station  
+**Project:** Heterogeneous electric AV feeder fleet for Footscray first-mile access
 **Purpose:** defensible, transparent cost assumptions for evaluation-only cost metrics  
 **Recommended repository path:** `docs/cost_assumptions_reference.md`  
-**Status:** base-case values recorded in the legacy Melton config, `config/legacy_melton_base_config.json`
+**Status:** active base-case values recorded in `config/footscray_base_config.json`; the legacy Melton config is retained unchanged for archived reproducibility
 
 ---
 
@@ -40,9 +40,9 @@ The current code separates evaluation cost from routing cost.
 "cost_model": {
   "fixed_cost_per_vehicle": {
     "Scooter": 1.98,
-    "Moped": 4.02,
-    "Car": 39.96,
-    "Minibus": 42.59
+    "Moped": 3.42,
+    "Car": 33.96,
+    "Minibus": 55.23
   },
   "maintenance_cost_per_km": {
     "Scooter": 0.06,
@@ -62,6 +62,8 @@ The current code separates evaluation cost from routing cost.
 `fixed_cost_km_equiv` belongs to `fleet.vehicle_types[]` and is used by the PyVRP solver objective as a kilometre-equivalent routing penalty. It must remain unchanged unless a future experiment explicitly changes the optimization objective. Putting AUD fixed costs into `fixed_cost_km_equiv` would change routing decisions and invalidate the evaluation-only cost assumption.
 
 Electricity price remains in the energy model, not in the vehicle-level maintenance-cost fields.
+
+Fixed fleet cost uses the configured fleet size for each vehicle type, not only the vehicles dispatched or used in a particular solution.
 
 ---
 
@@ -108,7 +110,7 @@ Base case:
 
 Rationale:
 
-- The Melton experiment represents weekday morning-peak station access.
+- The Footscray experiment represents weekday morning-peak station access.
 - A 250-day service year approximates five weekdays per week over 50 operating weeks.
 - This converts annualized capital cost into a daily fixed fleet cost for the one-day simulation.
 
@@ -123,9 +125,9 @@ All monetary values are Australian dollars (AUD). Retail prices and dealer listi
 | Vehicle class | Purchase cost (AUD) | Economic life (yr) | Main rationale |
 |---|---:|---:|---|
 | Scooter | 1,300 | 3 | Mid-range Australian e-scooter retail price; short fleet-use life due to battery and component wear. |
-| Moped | 6,000 | 8 | Road-registered electric moped/light electric motorcycle proxy, between low-end and higher-spec Australian market references. |
-| Car | 59,648 | 8 | Tesla Model 3 Australian price proxy, consistent with electric-car energy assumptions. |
-| Minibus | 96,980 | 15 | Small electric minibus / shuttle proxy; 15-year life follows bus-class assumption for vehicles above 3.5 t GVM. |
+| Moped | 6,000 | 10 | Road-registered electric moped/light electric motorcycle proxy; 10-year life aligns with the other road-vehicle classes. |
+| Car | 59,648 | 10 | Tesla Model 3 Australian price proxy; 10-year life aligns with the other road-vehicle classes. |
+| Minibus | 96,980 | 10 | Small electric minibus/shuttle proxy; 10-year life aligns with the other road-vehicle classes. |
 
 ### Scooter
 
@@ -162,7 +164,7 @@ Rationale:
 - ROLL'N electric mopeds show Australian prices around AUD 4,350--4,950 depending on model.
 - RedBook lists the 2025 Super Soco CPX electric scooter with price when new of AUD 7,690.
 - AUD 6,000 is a middle value between entry-level electric mopeds and higher-spec Super Soco-style electric scooter/motorcycle references.
-- An 8-year economic life is used by analogy with motor vehicle / motorcycle effective-life assumptions; if the exact current ATO motorcycle row is used in the paper, verify against the current effective-life determination.
+- A 10-year economic life is used consistently with the car and minibus road-vehicle assumptions. The scooter retains a shorter life because of its distinct micromobility duty cycle and component wear.
 
 References:
 
@@ -184,6 +186,7 @@ Rationale:
 - The simulation uses an electric passenger-car platform for the AV car, fallback private car trips, and private-car baseline.
 - The Tesla Model 3 is also used as the electric-car reference in the energy assumptions document, so keeping the same class is internally consistent.
 - CarExpert lists the 2026 Tesla Model 3 in Australia from AUD 59,648 drive-away, with variant prices up to AUD 86,948.
+- A 10-year economic life is used consistently across the moped, car, and minibus road-vehicle classes.
 - This base case is conservative-high relative to cheaper Australian EVs. If cost results become a major finding, a lower-cost EV sensitivity should be considered.
 
 Reference:
@@ -201,14 +204,15 @@ Base purchase cost:
 
 Rationale:
 
-- The modeled minibus is an 8-passenger electric shuttle/minibus class, not a full-size transit bus.
+- The modeled minibus is a 10-passenger electric shuttle/minibus class, not a full-size transit bus.
 - Joylong EA6 listings provide an Australian small electric minibus reference.
 - The 2026 Joylong EA6 electric minibus listing gives AUD 96,980 excluding government charges.
-- A 15-year economic life is used because the Joylong EA6 reference has gross vehicle mass above 3.5 tonnes and fits a bus/minibus category better than a passenger car.
+- A 10-year economic life is used consistently across the moped, car, and minibus road-vehicle classes.
+- Capital and maintenance costs are specified per vehicle, not per seat. The Footscray minibus cost is therefore not scaled by `10/8` when capacity changes from the legacy 8-seat assumption to 10 seats.
 
 Important caveat:
 
-- The minibus lifetime assumption is consequential. At 15 years, minibus daily fixed cost is close to car daily fixed cost. If an 8-year minibus life were used, daily fixed cost would increase materially. If cost is emphasized in the paper, include a sensitivity or caveat for minibus economic life and battery replacement.
+- The minibus lifetime assumption remains consequential. If cost is emphasized in the paper, include a sensitivity or caveat for minibus economic life and battery replacement.
 
 References:
 
@@ -255,28 +259,28 @@ References:
 
 ## 6. Annualized base-case values
 
-Using `r = 0.07` and `service_days_per_year = 250`:
+Using `r = 0.07` and `service_days_per_year = 250`, the active Footscray configuration adopts the following rounded evaluation parameters:
 
-| Vehicle | Purchase cost (AUD) | Life (yr) | CRF | Annualized capital cost (AUD/yr) | Fixed cost (AUD/service day) | Maintenance (AUD/km) |
-|---|---:|---:|---:|---:|---:|---:|
-| Scooter | 1,300 | 3 | 0.38105 | 495.37 | 1.98 | 0.06 |
-| Moped | 6,000 | 8 | 0.16747 | 1,004.81 | 4.02 | 0.04 |
-| Car | 59,648 | 8 | 0.16747 | 9,989.12 | 39.96 | 0.04 |
-| Minibus | 96,980 | 15 | 0.10980 | 10,647.88 | 42.59 | 0.25 |
+| Vehicle | Purchase cost (AUD) | Life (yr) | CRF | Configured fixed cost (AUD/service day) | Maintenance (AUD/km) |
+|---|---:|---:|---:|---:|---:|
+| Scooter | 1,300 | 3 | 0.38105 | 1.98 | 0.06 |
+| Moped | 6,000 | 10 | 0.14238 | 3.42 | 0.04 |
+| Car | 59,648 | 10 | 0.14238 | 33.96 | 0.04 |
+| Minibus | 96,980 | 10 | 0.14238 | 55.23 | 0.25 |
 
 ---
 
 ## 7. Recommended config update
 
-Update the legacy Melton `config/legacy_melton_base_config.json` cost model only:
+Use the following cost model in the active Footscray `config/footscray_base_config.json`. Keep `config/legacy_melton_base_config.json` unchanged for archived reproducibility:
 
 ```json
 "cost_model": {
   "fixed_cost_per_vehicle": {
     "Scooter": 1.98,
-    "Moped": 4.02,
-    "Car": 39.96,
-    "Minibus": 42.59
+    "Moped": 3.42,
+    "Car": 33.96,
+    "Minibus": 55.23
   },
   "maintenance_cost_per_km": {
     "Scooter": 0.06,
@@ -299,9 +303,9 @@ Optional documentation-only metadata may be stored in this reference file or a s
   "cost_base_year": 2026,
   "vehicle_capital_assumptions": {
     "Scooter": {"purchase_price_aud": 1300, "economic_life_years": 3},
-    "Moped": {"purchase_price_aud": 6000, "economic_life_years": 8},
-    "Car": {"purchase_price_aud": 59648, "economic_life_years": 8},
-    "Minibus": {"purchase_price_aud": 96980, "economic_life_years": 15}
+    "Moped": {"purchase_price_aud": 6000, "economic_life_years": 10},
+    "Car": {"purchase_price_aud": 59648, "economic_life_years": 10},
+    "Minibus": {"purchase_price_aud": 96980, "economic_life_years": 10}
   }
 }
 ```
@@ -323,7 +327,7 @@ Reference:
 
 If cost becomes a central result, the most useful sensitivity checks are:
 
-1. **Minibus economic life sensitivity**: compare the 15-year base case with an 8--10 year minibus life. This is the most important sensitivity because it materially changes minibus daily fixed cost.
+1. **Road-vehicle economic life sensitivity**: compare the 10-year base case with shorter and longer lives, especially for the minibus, because lifetime materially changes daily fixed cost.
 2. **Discount-rate sensitivity**: repeat fixed-cost calculations at 3%, 7%, and 10%, following the OIA sensitivity range.
 3. **Lower-cost EV car sensitivity**: replace the Tesla Model 3 proxy with a lower-cost Australian EV platform if reviewers question the car capital assumption.
 4. **Capital-light sensitivity**: report maintenance + electricity only, excluding daily capital fixed cost.
@@ -334,9 +338,9 @@ For reference, at alternative discount rates, fixed costs are approximately:
 | Vehicle | 3% AUD/day | 7% AUD/day | 10% AUD/day |
 |---|---:|---:|---:|
 | Scooter | 1.84 | 1.98 | 2.09 |
-| Moped | 3.42 | 4.02 | 4.50 |
-| Car | 33.99 | 39.96 | 44.72 |
-| Minibus | 32.49 | 42.59 | 51.00 |
+| Moped | 2.81 | 3.42 | 3.91 |
+| Car | 27.97 | 33.96 | 38.83 |
+| Minibus | 45.48 | 55.23 | 63.13 |
 
 ---
 
@@ -349,15 +353,15 @@ Suggested table for the paper if space permits:
 | Vehicle | Fixed cost (AUD/day) | Maintenance cost (AUD/km) |
 |---|---:|---:|
 | Scooter | 1.98 | 0.06 |
-| Moped | 4.02 | 0.04 |
-| Car | 39.96 | 0.04 |
-| Minibus | 42.59 | 0.25 |
+| Moped | 3.42 | 0.04 |
+| Car | 33.96 | 0.04 |
+| Minibus | 55.23 | 0.25 |
 
 ---
 
 ## 11. Notes for future updates
 
 - Keep this file beside `docs/energy_assumptions_reference.md`.
-- Update `docs/PROJECT_SPEC.md` after `config/legacy_melton_base_config.json` is changed.
+- Update `docs/PROJECT_SPEC.md` whenever the active Footscray cost assumptions change; keep legacy Melton values unchanged unless archived reproducibility requirements explicitly change.
 - Any future change that makes cost part of the solver objective must be treated as a new modeling assumption and documented separately.
 - If final results emphasize cost rankings strongly, include minibus lifetime and lower-cost car sensitivities.

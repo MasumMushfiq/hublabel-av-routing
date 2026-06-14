@@ -1,6 +1,6 @@
-# Corrected Footscray Pipeline Runbook
+# Footscray Pipeline Runbook
 
-This runbook rebuilds the corrected Footscray data pipeline from raw Myki and OSM inputs through smoke validation. Run commands from the repository root.
+This runbook rebuilds the Footscray data pipeline from raw Myki and OSM inputs through smoke validation. Run commands from the repository root.
 
 ```bash
 cd /path/to/hub_label
@@ -8,7 +8,7 @@ PYTHON=.venv/bin/python
 [[ -x "$PYTHON" ]] || PYTHON=python3
 ```
 
-The corrected case uses Footscray Railway Station, road node `240615`, Myki `DimStopLocation.StopLocationID` `20025` from transaction column `8`, and date `2018-03-15`.
+This case uses Footscray Railway Station, road node `240615`, Myki `DimStopLocation.StopLocationID` `20025` from transaction column `8`, and date `2018-03-15`.
 
 ```text
 Active Footscray config: config/footscray_base_config.json
@@ -152,7 +152,7 @@ The active config separates three timing concepts:
 The 30-minute `--pickup-buffer` remains the commuter pickup-window width: `pickup_earliest = drop_off_latest - 30`. It does not widen Myki extraction.
 A commuter with a `07:01` tap-on/deadline may therefore be picked up from `06:31`, while their fixed station-arrival slot is `07:00`, not `06:50`.
 
-Build the corrected commuter file from 2018 Week 11:
+Build the Footscray commuter file from 2018 Week 11:
 
 ```bash
 "$PYTHON" python/build_myki_commuters.py \
@@ -267,9 +267,9 @@ and runs seed 1. This is an input/model smoke check, not a final paper experimen
 
 ## 11. Common Mistakes
 
-- Do not use transaction column `7` for corrected station-level demand. Use column `8` and StopLocationID `20025`.
+- Do not use transaction column `7` for station-level demand. Use column `8` and StopLocationID `20025`.
 - Do not pass `footscray_residential_candidate_nodes_3km.csv` to matrix dumping. Use the final commuter CSV with `origin_node`.
 - Do not confuse the Myki demand window (`07:00–09:30`), vehicle service horizon (`06:30–09:30`), and fixed deadline slots (`07:00–09:30`).
 - Use `config/footscray_base_config.json` directly: `demand_window` controls extraction, `service_horizon` controls vehicle operation, and `time_window` controls station-arrival slots.
-- Do not use `config/legacy_melton_base_config.json` for corrected Footscray runs.
+- Do not use `config/legacy_melton_base_config.json` for Footscray runs.
 - Do not treat smoke outputs as final evidence.

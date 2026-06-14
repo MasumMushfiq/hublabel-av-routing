@@ -36,26 +36,31 @@ Autonomous scooters, bikes, and mopeds are conceptually different from current s
 
 ## 2. Current Case Study and Demand Setting
 
-The corrected main paper case study is **Footscray Railway Station, Melbourne**.
+The main paper case study is **Footscray Railway Station, Melbourne**.
 
 Current demand assumptions:
 
+- Station road node: `240615`.
 - Myki tap-on demand window: `07:00–09:30`.
 - Vehicle service horizon: `06:30–09:30`, allowing pickups from `06:30` where commuter pickup windows permit them.
 - Fixed station-arrival deadline slots: 20-minute slots from `07:00–09:30`.
 - Main Myki date: `2018-03-15`.
 - Footscray `DimStopLocation.StopLocationID`: `20025`.
-- Corrected demand: `586` commuters from the station-level extraction.
+- Footscray demand: `586` commuters from the station-level extraction.
 - Temporal demand is derived from Myki train tap-on records.
 - Myki provides station arrival/tap-on timing, not home locations.
-- The main Footscray commuter-origin method uses inferred OSM residential/address candidates mapped to existing road-network nodes.
+- The main Footscray commuter-origin method samples residential origins from reachable road-network nodes mapped from inferred OSM residential/address candidates.
+- The main fleet-composition grid uses an 80-seat reference fleet with vehicle capacities of 1 scooter passenger, 2 moped passengers, 4 car passengers, and 10 minibus passengers.
+- Main analysis settings are PyVRP/HGS, a 300-second time limit, and 15 seeds.
+- Baseline private cars, fallback private cars, and AV fleet vehicles are all electric.
+- System metrics combine adjusted AV routes with fallback private-car trips; service rate is the primary service metric.
 - Generic reachable road-network node sampling is retained only as a robustness/sensitivity comparison.
 
 Archived Melton note:
 
 - Melton was the previous experiment context.
 - Melton demand/results generated using transaction column `7` are archived for reproducibility and must not be used as final paper results.
-- Full Footscray PyVRP experiments, seed convergence, fleet-composition results, and capacity sensitivity are pending corrected reruns.
+- Full Footscray PyVRP experiments, seed convergence, fleet-composition results, and capacity sensitivity are pending reruns.
 
 Important limitation:
 
@@ -65,7 +70,7 @@ Important limitation:
 
 ## 3. Demand-Generation Pipeline
 
-The command-oriented reproducibility guide for the corrected Footscray workflow is:
+The command-oriented reproducibility guide for the Footscray workflow is:
 
 ```text
 docs/FOOTSCRAY_PIPELINE.md
@@ -127,7 +132,7 @@ Current key inputs:
 
 `--station-name` is a metadata label for the selected station. The active paper demand should set it to `Footscray`.
 
-`--stop-ids` is a comma-separated list of station/location identifier values used to select station tap-ons from the column chosen by `--stop-id-column`. The corrected Footscray demand uses:
+`--stop-ids` is a comma-separated list of station/location identifier values used to select station tap-ons from the column chosen by `--stop-id-column`. The Footscray demand uses:
 
 ```text
 20025
@@ -138,7 +143,7 @@ Current key inputs:
 - column `8` contains the station-specific `DimStopLocation.StopLocationID` values from `stop_locations.txt` and must be used for station-level paper demand;
 - column `7` remains supported only for archived/reproducibility checks and must not be used for station-level paper demand.
 
-The corrected Footscray extraction must pass `--stop-id-column 8`, `--stop-ids 20025`, `--station-name Footscray`, and date `2018-03-15`.
+The Footscray extraction must pass `--stop-id-column 8`, `--stop-ids 20025`, `--station-name Footscray`, and date `2018-03-15`.
 
 The previous Melton extraction used column `7`; it is retained only as archived experiment context and is not valid station-level paper demand.
 
@@ -253,14 +258,16 @@ pair sampled origins with Myki tap-on deadlines
 
 The full Footscray road network is retained for routing. Only the residential origin candidate pool is filtered.
 
-The main Footscray candidate policy uses direct radial distance from Footscray Railway Station:
+The main Footscray candidate policy uses haversine distance from each extracted residential/address candidate point to Footscray Railway Station:
 
 - lower bound: beyond walking distance, greater than `800 m`;
 - upper bound: within a `3 km` radial first-mile catchment.
 
-The `800 m` lower bound removes trips plausibly served on foot. The `3 km` outer bound avoids assigning riders from areas closer to neighbouring stations such as Middle Footscray, West Footscray, Seddon, Yarraville, Tottenham, Newport, Sunshine, or Albion.
+The `800 m` lower bound removes origins plausibly served on foot. The `3 km` upper bound defines the residential candidate catchment and avoids assigning riders from areas closer to neighbouring stations such as Middle Footscray, West Footscray, Seddon, Yarraville, Tottenham, Newport, Sunshine, or Albion.
 
 The catchment filter is applied to extracted residential/address candidate points before mapping to the nearest road node. Therefore, final mapped road-node distances can differ slightly from the nominal `800 m` and `3 km` thresholds.
+
+Candidate-point metadata confirms that the intended haversine catchment was applied correctly: the maximum retained candidate-point distance is `2999.97 m`, with `0` retained candidate points above `3 km`.
 
 Main generated residential candidate file:
 
@@ -317,6 +324,10 @@ Validated network origin-to-station distances for the 586 commuters:
 | Greater than 8 km | 3 / 586 |
 | Greater than 10 km | 0 / 586 |
 
+These matrix distances are distinct from the haversine distances used for residential catchment filtering. In `assignments.csv`, `direct_station_dist_mm` is the commuter's unpooled road-network shortest-path distance from the origin node to the station, stored in millimetres. It is written from `dist_mm_raw[origin_node, station_idx]`, where `dist_mm_raw` comes from the hub-label `distances.npy` road-network matrix. Here, "direct" means the single-rider, unpooled station trip; it does not mean haversine or as-the-crow-flies distance. Paper text and figures should call this quantity the **unpooled road-network station distance** or **network station distance**.
+
+Road-network circuity around Footscray therefore allows origins inside the `0.8--3.0 km` haversine candidate catchment to have network station distances above `5 km`, including observed distances up to approximately `8.2 km`. The `5+ km` bin in vehicle-type assignment analysis is consequently valid and is not evidence that the candidate catchment cap failed.
+
 ### 3.3 Station-Generic Network Preparation
 
 Station-generic OSM network preparation is implemented in:
@@ -353,7 +364,7 @@ Paper framing:
 - Main results should use residential-origin demand.
 - Generic reachable-node demand may be reported compactly as a robustness check if the qualitative fleet tradeoffs are similar.
 - If generic-node and residential-origin results differ, residential-origin results should be treated as more defensible for the main analysis because they are spatially grounded in residential/address candidates.
-- Corrected calibration and main Footscray experiments should use residential-origin demand as the primary demand input. Generic reachable-node demand is retained only as a robustness/sensitivity comparison.
+- Calibration and main Footscray experiments should use residential-origin demand as the primary demand input. Generic reachable-node demand is retained only as a robustness/sensitivity comparison.
 
 ---
 
@@ -366,7 +377,7 @@ The current active fleet has four electric AV vehicle types.
 | Scooter | 1 | 25 km/h | 0.016 kWh/km |
 | Moped | 2 | 45 km/h | 0.058 kWh/km |
 | Car | 4 | 80 km/h | 0.155 kWh/km |
-| Minibus | 8 in canonical base; 10 in Footscray reference | 70 km/h | 0.330 kWh/km |
+| Minibus | 10 | 70 km/h | 0.330 kWh/km |
 
 The previous Melton experiments instantiated the balanced reference pattern as a **224-seat** fleet:
 
@@ -396,7 +407,7 @@ Minibus capacity 10 is defined in the active Footscray reference config. The ren
 
 For end-to-end commands from raw inputs through smoke validation, see `docs/FOOTSCRAY_PIPELINE.md`.
 
-The active corrected Footscray config is:
+The active Footscray config is:
 
 ```text
 config/footscray_base_config.json
@@ -408,7 +419,7 @@ The old generic/Melton-era config is retained explicitly as:
 config/legacy_melton_base_config.json
 ```
 
-The corrected smoke workflow is reproducible with:
+The smoke workflow is reproducible with:
 
 ```bash
 bash experiments/scripts/run_footscray_smoke.sh
@@ -416,7 +427,7 @@ bash experiments/scripts/run_footscray_smoke.sh
 
 This helper uses the final Footscray commuter CSV, station CSV, residential matrix, output directory `experiments/results/footscray/smoke_balanced_80seats_mb10_h0630_seed1`, and seed 1. It creates a temporary `config.json` in that output directory by copying `config/footscray_base_config.json` and changing only the experiment metadata and solver limit to 60 seconds. It does not rebuild demand or matrices.
 
-The corrected Footscray residential matrix can be rebuilt explicitly with:
+The Footscray residential matrix can be rebuilt explicitly with:
 
 ```bash
 make footscray_dump_matrices
@@ -424,7 +435,7 @@ make footscray_dump_matrices
 
 This target preserves the generic matrix targets and fixes the Footscray labels, final commuter CSV, station node, speed table, and matrix output paths. The matrix input is the final commuter CSV with `origin_node`, never the candidate pool with `node_id`.
 
-Corrected Footscray experiment runners should copy `config/footscray_base_config.json` and modify only experiment-specific fields such as:
+Footscray experiment runners should copy `config/footscray_base_config.json` and modify only experiment-specific fields such as:
 
 - `experiment_name`,
 - `composition_metadata`,
@@ -446,7 +457,7 @@ Shared active Footscray assumptions should remain in `config/footscray_base_conf
 
 ## 6. Time-Window Model
 
-Corrected Footscray time-window setting:
+Footscray time-window setting:
 
 ```text
 demand_window.start_time_minutes: 420   # 07:00 Myki extraction
@@ -787,7 +798,8 @@ Baseline distance:
 
 ```text
 baseline_total_vmt_km =
-    sum of direct origin-to-station shortest-path distance for all feasible commuters
+    sum of unpooled road-network origin-to-station shortest-path distance
+    for all feasible commuters
 ```
 
 Baseline energy and emissions use the electric private-car parameters.
@@ -882,9 +894,9 @@ Current base evaluation-cost assumptions:
 | Vehicle type | Fixed cost | Maintenance cost |
 |---|---:|---:|
 | Scooter | 1.98 AUD/vehicle/day | 0.06 AUD/km |
-| Moped | 4.02 AUD/vehicle/day | 0.04 AUD/km |
-| Car | 39.96 AUD/vehicle/day | 0.04 AUD/km |
-| Minibus | 42.59 AUD/vehicle/day | 0.25 AUD/km |
+| Moped | 3.42 AUD/vehicle/day | 0.04 AUD/km |
+| Car | 33.96 AUD/vehicle/day | 0.04 AUD/km |
+| Minibus | 55.23 AUD/vehicle/day | 0.25 AUD/km |
 
 Interpretation:
 
@@ -892,6 +904,8 @@ Interpretation:
 - Costs are computed after routing and pruning; they are not part of route construction or the solver objective.
 - The model excludes autonomy-stack premium, driver labour, depot/charging infrastructure, insurance, and remote supervision.
 - Results should be interpreted as relative/indicative cost indicators, not as a full deployment business case.
+- Fixed capital cost uses a 7% capital recovery factor and 250 service days per year. Economic life is 3 years for scooters and 10 years for mopeds, cars, and minibuses.
+- The Footscray minibus represents a 10-passenger electric shuttle/minibus class. Costs are per vehicle and are not scaled from the legacy 8-seat capacity on a per-seat basis.
 
 Definitions:
 
@@ -959,6 +973,25 @@ Diagnostic-only metrics:
 - detailed parking subcomponents;
 - AV-only VMT/energy/CO2 reductions when system metrics exist.
 
+### Vehicle-Type Pooling and Distance Efficiency
+
+The paper-facing vehicle-type mechanism metric is **AV-km/unpooled-km**. For each vehicle type, it is defined as:
+
+```text
+AV-km/unpooled-km =
+    adjusted AV vehicle-km for that vehicle type
+    / summed unpooled road-network station distance of commuters served by that vehicle type
+```
+
+The denominator sums each served commuter's single-rider network shortest-path distance from origin node to station. It is not the haversine distance used to filter residential candidate points.
+
+Interpretation:
+
+- values near `2` indicate dedicated out-and-back service with little or no pooling;
+- values below `1` indicate pooled service that amortizes vehicle travel across multiple commuters.
+
+The historical CSV aliases `av_km_per_direct_km_*` may remain for backward compatibility, but paper-facing outputs should use `av_km_per_unpooled_km_mean`, `av_km_per_unpooled_km_std`, and `av_km_per_unpooled_km_sem`.
+
 ### Passenger Experience, Cost, and Parking Presentation
 
 Average in-vehicle time is a secondary passenger-experience metric. It is most useful in the representative fleet comparison to check whether system VMT savings come with longer passenger travel times. Do not use in-vehicle time as a primary metric in every experiment.
@@ -972,8 +1005,8 @@ Suggested placement:
 - Fleet grid: no cost, parking, or in-vehicle time in the main figure.
 - Representative comparison: include in-vehicle time and optionally one cost and one parking metric.
 - Vehicle-type contribution: focus on served share, VMT share, and distance assignment.
-- Capacity sensitivity: local sensitivity analysis around the verified station-specific reference capacity, not fleet-size optimization. The main paper-facing figure focuses on system VMT reduction and system CO2 reduction. Service rate and fallback private cars remain in summary CSVs and diagnostics, but they are not the main capacity figure. System metrics include adjusted AV routes plus fallback private-car trips. Generic-origin capacity results remain diagnostic/robustness only.
-- Pilot demand sensitivity: fixed near-112-seat pilot-fleet stress test, not capacity scaling. The main paper-facing figure focuses on service rate and fallback private cars. Supported commuters are retained in summary CSVs and prose as needed. VMT/CO2 pilot plots are diagnostic only unless demand-matched baselines are confirmed. Cost and parking are not main pilot-section metrics unless needed for a separate application discussion.
+- Capacity sensitivity: representative-fleet response across 50--200% nominal capacity, not fleet-size optimization. The main paper-facing figure uses actual realized seats and focuses on system VMT reduction and system CO2 reduction. Service rate and fallback private cars remain in summary CSVs and diagnostics, but they are not the main capacity figure. System metrics include adjusted AV routes plus fallback private-car trips. Generic-origin capacity results remain diagnostic/robustness only.
+- Pilot demand sensitivity: fixed 38--40-seat pilot-fleet stress test, not capacity scaling. The main paper-facing figure focuses on service rate and fallback private cars. Supported commuters are retained in summary CSVs and prose as needed. VMT/CO2 pilot plots are diagnostic only unless demand-matched baselines are confirmed. Cost and parking are not main pilot-section metrics unless needed for a separate application discussion.
 
 Current experiment presentation plan:
 
@@ -990,29 +1023,31 @@ Current experiment presentation plan:
    - pilot `x0.50` may be used only as an illustrative secondary mechanism check if it clarifies vehicle utilization;
    - scooter underuse in the archived 224-seat Melton setting should be treated as a previous empirical finding, not an assumed Footscray result.
 4. Capacity sensitivity:
-   - use residential-origin capacity results as local sensitivity around the verified Footscray reference capacity;
-   - main figure: system VMT reduction and system CO2 reduction vs capacity scale;
+   - use the balanced, VMT-oriented, low-emission S50/M50, and all-car representatives;
+   - evaluate nominal scales of 50%, 100%, 150%, and 200% around the 80-seat Footscray reference;
+   - report and plot actual realized seats after integer vehicle-count rounding;
+   - main figure: system VMT reduction and system CO2 reduction vs actual realized seats;
    - service rate and fallback private cars remain diagnostic/supporting metrics;
    - generic capacity run is diagnostic/robustness only;
-   - runtime diagnostic at `x1.25` indicates high-capacity service behavior is not primarily a 300-second runtime artifact.
+   - the earlier `x1.25` runtime diagnostic remains archived and is not part of this active sweep.
 5. Pilot-fleet demand sensitivity:
-   - use fixed near-112-seat pilot fleets;
+   - use four fixed pilot fleets around 38--40 seats: balanced, VMT-oriented, low-emission S50/M50, and all-car;
+   - do not rerun all-minibus; discuss that homogeneous extreme from the completed composition grid;
    - main figure: service rate and fallback private cars vs demand fraction;
    - supported commuters used in prose/summary;
    - VMT/CO2 kept diagnostic unless demand-matched baselines are confirmed;
-   - optional `all_minibus_pilot` is excluded from paper-facing analysis.
 6. Generic-origin robustness:
    - run deliberately as a robustness check;
    - do not use accidental generic results as the main evidence.
 7. Multi-station extension:
-   - deferred until the corrected Footscray primary experiment is rerun and checked;
+   - deferred until the Footscray primary experiment is rerun and checked;
    - Footscray is the primary/full-depth case study;
    - future transferability stations must also use column-8 station-specific Myki demand;
    - current candidate robustness stations are Williams Landing and Box Hill, pending final validation;
    - Caulfield and Pakenham are older candidate stations and are not the planned/default pair;
    - do not run a full 35-grid for additional robustness stations unless explicitly requested later.
 8. Multi-station robustness presentation:
-   - station summary table: station, context, commuters, seats, commuter/seat ratio, number of origin nodes, and average/median direct distance if available;
+   - station summary table: station, context, commuters, seats, commuter/seat ratio, number of origin nodes, and average/median network station distance if available;
    - one compact multi-station result figure/table comparing selected fleets across service rate, fallback private-car use, system VMT reduction, system CO2 reduction, and operating cost or cost reduction if available;
    - do not create separate full per-station result sections unless needed.
 
@@ -1037,15 +1072,15 @@ distance_bin_assignment_stacked_bar.png
 Capacity sensitivity:
 
 ```text
-capacity_sensitivity_vmt_co2.pdf
-capacity_sensitivity_vmt_co2.png
+capacity_sensitivity_response.pdf
+capacity_sensitivity_response.png
 ```
 
 Pilot demand sensitivity:
 
 ```text
-pilot_demand_sensitivity_service_fallback.pdf
-pilot_demand_sensitivity_service_fallback.png
+pilot_fleet_demand_sensitivity_service_fallback.pdf
+pilot_fleet_demand_sensitivity_service_fallback.png
 ```
 
 ### LaTeX and Figure Notation
@@ -1058,7 +1093,7 @@ pilot_demand_sensitivity_service_fallback.png
 
 ## 15. Default Experiment Settings
 
-Initial corrected Footscray rerun settings, pending Footscray-specific validation:
+Initial Footscray rerun settings, pending Footscray-specific validation:
 
 ```text
 solver: PyVRP/HGS
@@ -1079,10 +1114,10 @@ Vehicle assignment emerges from routing distance, vehicle capacity, speed-specif
 
 Current validation status:
 
-- `300` seconds is the initial solver time limit for corrected Footscray reruns, not a validated Footscray runtime conclusion.
-- Runtime, seed count, and time-window representation are pending corrected Footscray validation.
+- `300` seconds is the initial solver time limit for Footscray reruns, not a validated Footscray runtime conclusion.
+- Runtime, seed count, and time-window representation are pending Footscray validation.
 - Fixed 20-minute slots are the initial representation used for reruns and smoke validation; they should not be described as Footscray-calibrated until validation is complete.
-- Do not describe Footscray VMT or other metrics as converged until corrected reruns are complete.
+- Do not describe Footscray VMT or other metrics as converged until reruns are complete.
 
 Calibration and reporting should use system-level metrics when fallback private cars exist:
 
@@ -1096,7 +1131,7 @@ system_total_co2_kg / system_co2_change_pct
 
 Do not report service coverage as 100% under the current fallback framing. `service_rate` is the share of commuters served on time by AV after pruning; remaining commuters are represented by `fallback_private_cars`.
 
-Initial experiment plan, pending corrected Footscray validation:
+Initial experiment plan, pending Footscray validation:
 
 ```text
 initial seeds: 15
@@ -1120,7 +1155,7 @@ case study: Footscray Railway Station residential-origin demand
 Myki StopLocationID: 20025
 Myki transaction column: 8 (DimStopLocation.StopLocationID)
 date: 2018-03-15
-corrected demand: 586 commuters
+Footscray demand: 586 commuters
 reference fleet: 20 scooters, 10 mopeds, 5 cars, 2 minibuses (80 seats; minibus capacity 10)
 PyVRP results: pending rerun
 seed convergence: pending rerun
@@ -1143,15 +1178,28 @@ experiments/scripts/run_fleet_composition_grid.sh
 Purpose:
 
 - enumerate 35 fleet compositions;
-- use the corrected 80-seat Footscray reference capacity as the active experimental design;
+- use the 80-seat Footscray reference capacity as the active experimental design;
 - generate one config per composition;
 - run each composition for `N_SEEDS`;
 - support `LABELS_OVERRIDE` for selected conditions;
 - support `TIME_LIMIT_SECONDS`, `PARALLEL_JOBS`, `CONFIG_ONLY`, and `OUTPUT_DIR`.
 
+Active defaults:
+
+```text
+BASE_CONFIG=config/footscray_base_config.json
+OUTPUT_DIR=experiments/results/footscray
+EXPERIMENT=fleet_composition_grid_footscray_80seats
+TIME_LIMIT_SECONDS=300
+N_SEEDS=15
+```
+
+The resulting default experiment directory is
+`experiments/results/footscray/fleet_composition_grid_footscray_80seats`.
+
 Important design:
 
-- Corrected Footscray runners should use `config/footscray_base_config.json` as their template; legacy Melton runners use `config/legacy_melton_base_config.json`.
+- Footscray runners should use `config/footscray_base_config.json` as their template; legacy Melton runners use `config/legacy_melton_base_config.json`.
 - The 80-seat Footscray reference fleet is an experiment-design choice, not a calibrated fleet capacity. The historical 224-seat grid applies only to archived Melton work.
 - It should preserve shared fields such as `demand_window`, `service_horizon`, `time_window`, `energy_model`, `baseline_parameters`, and `cost_model`. Legacy Melton configs may retain `penalty_parameters` for archived workflows, but active Footscray runners should not require them.
 - It should modify only experiment-specific fleet composition and metadata.
@@ -1159,10 +1207,12 @@ Important design:
 Common smoke-test pattern:
 
 ```bash
-OUTPUT_DIR=experiments/test_results/footscray_fleet_composition_grid_80seats \
+CONFIG_ONLY=1 \
+OUTPUT_DIR=experiments/test_results/footscray_grid_config_check \
+EXPERIMENT=fleet_grid_config_check \
 TIME_LIMIT_SECONDS=60 \
 N_SEEDS=1 \
-LABELS_OVERRIDE="comp_S25_M25_C25_MB25 comp_S25_M0_C0_MB75 comp_S25_M75_C0_MB0 comp_S0_M0_C100_MB0" \
+LABELS_OVERRIDE="comp_S25_M25_C25_MB25 comp_S25_M0_C0_MB75 comp_S50_M50_C0_MB0 comp_S0_M0_C100_MB0" \
 PARALLEL_JOBS=7 \
 bash experiments/scripts/run_fleet_composition_grid.sh
 ```
@@ -1171,18 +1221,26 @@ The historical smoke labels `comp_S25_M25_C0_MB50` and `comp_S25_M50_C0_MB25` ma
 
 ### 16.1 Selected Representative Fleets
 
-The representative seat-share patterns carried forward for the Footscray rerun are shown below. The balanced Footscray reference is 20 scooters, 10 mopeds, 5 cars, and 2 minibuses with capacity 10, giving 80 seats and exact 25% seat shares. Other absolute Footscray fleet realizations must preserve the intended seat shares under the Footscray capacities.
+The representative seat-share patterns used for the Footscray analysis are shown below. The balanced Footscray reference is 20 scooters, 10 mopeds, 5 cars, and 2 minibuses with capacity 10, giving 80 seats and exact 25% seat shares. Other absolute Footscray fleet realizations must preserve the intended seat shares under the Footscray capacities.
 
-| Representative fleet | Seat shares | Historical 224-seat Melton realization | Role |
+| Representative fleet | Seat shares | Active 80-seat Footscray realization | Role |
 |---|---|---|---|
-| Balanced heterogeneous reference | S25/M25/C25/MB25 | 56 scooters, 28 mopeds, 14 cars, 7 minibuses | Balanced reference |
-| VMT-oriented | S25/M0/C0/MB75 | 56 scooters, 0 mopeds, 0 cars, 21 minibuses | System VMT-oriented representative |
-| Low-emission | S25/M75/C0/MB0 | 56 scooters, 84 mopeds, 0 cars, 0 minibuses | System energy/CO2-oriented representative |
-| All-car homogeneous comparator | S0/M0/C100/MB0 | 0 scooters, 0 mopeds, 56 cars, 0 minibuses | Homogeneous comparator |
+| Balanced heterogeneous reference | S25/M25/C25/MB25 | 20 scooters, 10 mopeds, 5 cars, 2 minibuses | Balanced reference |
+| VMT-oriented | S25/M0/C0/MB75 | 20 scooters, 0 mopeds, 0 cars, 6 minibuses | System VMT-oriented representative |
+| Low-emission | S50/M50/C0/MB0 | 40 scooters, 20 mopeds, 0 cars, 0 minibuses | System energy/CO2-oriented representative |
+| All-car homogeneous comparator | S0/M0/C100/MB0 | 0 scooters, 0 mopeds, 20 cars, 0 minibuses | Homogeneous comparator |
 
-All-scooter, all-moped, and all-minibus compositions remain part of the 35-composition grid. They are no longer carried forward as main representative fleets and should be treated as diagnostic/extreme grid cases unless explicitly selected for a separate sensitivity test.
+The corresponding experiment labels are `comp_S0_M0_C100_MB0`, `comp_S25_M25_C25_MB25`, `comp_S25_M0_C0_MB75`, and `comp_S50_M50_C0_MB0`. The low-emission representative is S50/M50/C0/MB0 and must not be described as the older S25/M75 fleet.
 
-### 16.1.1 Corrected Footscray Smoke Validation
+All-scooter, all-moped, and all-minibus compositions remain part of the 35-composition grid. They are not rerun in the representative capacity or pilot demand sensitivity experiments and are discussed as diagnostic/extreme grid cases. In particular, all-minibus is a grid diagnostic/extreme only.
+
+The active plotter defaults to the experiment directory above, accepts
+`--results-dir` and `--out`, writes `fleet_composition_grid_summary.csv`, and
+produces the paper-facing
+`fleet_composition_tradeoff_system_vmt_co2.pdf` and
+`fleet_composition_tradeoff_system_vmt_co2.png` outputs.
+
+### 16.1.1 Footscray Smoke Validation
 
 The balanced 80-seat, minibus-capacity-10 smoke run used seed 1, a 60-second solver limit, and the `06:30–09:30` service horizon. It produced:
 
@@ -1196,7 +1254,7 @@ The balanced 80-seat, minibus-capacity-10 smoke run used seed 1, a 60-second sol
 | Vehicle trips | 154 |
 | Pooling rate | 94.16% |
 
-This corrected post-window-fix smoke result is only an input and model validation check. It is not final paper evidence and must not be presented as a converged experiment result.
+This post-window-fix smoke result is only an input and model validation check. It is not final paper evidence and must not be presented as a converged experiment result.
 
 ### 16.2 Representative Capacity Sensitivity
 
@@ -1209,7 +1267,7 @@ experiments/scripts/plot_capacity_sensitivity_representative.py
 
 Purpose:
 
-- test whether the selected representative fleet strategies remain stable under moderate capacity changes.
+- test how the selected representative fleet strategies respond across a broad range of realized fleet capacities.
 
 Fleet strategies:
 
@@ -1223,18 +1281,20 @@ all_car
 Capacity scales:
 
 ```text
-x0.90
-x1.00
-x1.10
-x1.25
+50%
+100%
+150%
+200%
 ```
+
+Each vehicle count is scaled from the representative's 100% counts using round-half-up, with a minimum of one vehicle for a type present at 100% when the scale is nonzero. Summary tables and plots report actual realized seats because integer rounding can differ from the nominal target. Balanced therefore realizes 42, 80, 122, and 160 seats; the VMT-oriented, low-emission, and all-car representatives realize 40, 80, 120, and 160 seats.
 
 Current settings:
 
 - residential-origin demand;
-- initial 15 seeds, pending corrected Footscray seed validation;
-- initial 300-second solver runtime, pending corrected Footscray runtime validation;
-- initial fixed 20-minute slots, pending corrected Footscray time-window validation.
+- initial 15 seeds, pending Footscray seed validation;
+- initial 300-second solver runtime, pending Footscray runtime validation;
+- initial fixed 20-minute slots, pending Footscray time-window validation.
 
 The analyzer should extract:
 
@@ -1248,9 +1308,9 @@ The analyzer should extract:
 
 Cost and parking are evaluation-only and do not affect routing.
 
-Targeted runtime diagnostic:
+Archived runtime diagnostic:
 
-- A targeted runtime diagnostic was run for `x1.25` all-car and VMT-oriented fleets using seeds 1--5 at 600 seconds and 1200 seconds.
+- A targeted runtime diagnostic was previously run for an archived `x1.25` all-car and VMT-oriented design using seeds 1--5 at 600 seconds and 1200 seconds.
 - Longer runtime did not recover service toward `x1.00` levels:
   - all-car `x1.25` service: 300-second main mean 88.3%, 600-second diagnostic 87.8%, 1200-second diagnostic 87.9%;
   - VMT-oriented `x1.25` service: 300-second main mean 92.0%, 600-second diagnostic 92.1%, 1200-second diagnostic 91.8%.
@@ -1260,7 +1320,7 @@ Targeted runtime diagnostic:
 Current state:
 
 - Previous Melton capacity outputs are archived because their demand was generated from transaction column `7`.
-- Corrected Footscray capacity sensitivity is pending rerun and must use column-8 Footscray station demand.
+- Footscray capacity sensitivity is pending rerun and must use column-8 Footscray station demand.
 
 ### 16.3 Pilot-Fleet Demand Sensitivity
 
@@ -1284,24 +1344,18 @@ x0.75
 x1.00
 ```
 
-Demand subsets are nested and preserve the train-slot distribution using `drop_off_latest`. The default demand sample seed is `42`.
+Demand subsets are nested prefixes of one fixed-seed sample order. The default demand sample seed is `42`. For 586 commuters, the round-half-up demand counts are 147, 293, 440, and 586.
 
-Default near-112-seat pilot fleets:
+Default 38--40-seat pilot fleets:
 
 | Pilot fleet | Counts | Seats |
 |---|---|---:|
-| balanced_pilot | 28 scooters, 14 mopeds, 7 cars, 3 minibuses | 108 |
-| vmt_oriented_pilot | 28 scooters, 0 mopeds, 0 cars, 10 minibuses | 108 |
-| low_emission_pilot | 28 scooters, 42 mopeds, 0 cars, 0 minibuses | 112 |
-| all_car_pilot | 0 scooters, 0 mopeds, 28 cars, 0 minibuses | 112 |
+| balanced_pilot | 10 scooters, 5 mopeds, 2 cars, 1 minibus | 38 |
+| vmt_oriented_pilot | 10 scooters, 0 mopeds, 0 cars, 3 minibuses | 40 |
+| low_emission_pilot | 20 scooters, 10 mopeds, 0 cars, 0 minibuses | 40 |
+| all_car_pilot | 0 scooters, 0 mopeds, 10 cars, 0 minibuses | 40 |
 
-An optional diagnostic `all_minibus_pilot` can be enabled with `INCLUDE_ALL_MINIBUS=1`:
-
-```text
-0 scooters, 0 mopeds, 0 cars, 14 minibuses = 112 seats
-```
-
-`all_minibus_pilot` is not used in the current paper-facing pilot analysis unless explicitly enabled for diagnostics. Paper-facing pilot analysis uses only:
+Paper-facing pilot analysis uses only:
 
 ```text
 all_car_pilot
@@ -1310,15 +1364,15 @@ vmt_oriented_pilot
 low_emission_pilot
 ```
 
-Pilot fleets should be described as "near-112-seat pilot fleets", "approximately half-scale pilot fleets", or a "112-seat pilot reference", not as exactly equal-seat fleets.
+The balanced pilot has 38 realized seats and the other three pilots have 40 realized seats. All-minibus is discussed from the completed fleet-composition grid and is not rerun in this experiment or the representative capacity sensitivity.
 
 Current state: previous Melton pilot outputs are archived because their demand was generated from transaction column `7`. Any Footscray pilot analysis is pending rerun.
 
 Runner design:
 
-- the existing Melton-era runner generates configs from `config/legacy_melton_base_config.json`; a corrected Footscray rerun must explicitly use `config/footscray_base_config.json`;
+- the active runner generates configs from `config/footscray_base_config.json`;
 - modify only `experiment_name`, fleet sizes/types, solver time limit, and pilot metadata;
-- preserve the all-electric energy, emissions, cost, parking, time-window, baseline, and penalty settings from the base config.
+- preserve the all-electric energy, emissions, cost, parking, time-window, and baseline settings from the base config.
 
 The analyzer should extract service, fallback private cars, system VMT/energy/CO2 metrics, parking, and cost metrics into summary CSVs.
 
@@ -1326,13 +1380,13 @@ The analyzer should extract service, fallback private cars, system VMT/energy/CO
 
 ### 16.4 Multi-Station Robustness Experiment
 
-The multi-station extension is deferred until the corrected Footscray primary experiment is complete. It remains a compact robustness/transferability experiment rather than a repeat of the full primary analysis.
+The multi-station extension is deferred until the Footscray primary experiment is complete. It remains a compact robustness/transferability experiment rather than a repeat of the full primary analysis.
 
 Stations:
 
 | Station | Role |
 |---|---|
-| Footscray | Corrected primary case; full-depth residential-origin experiments pending rerun |
+| Footscray | Primary case; full-depth residential-origin experiments pending rerun |
 | Williams Landing | Current candidate robustness station, pending final validation |
 | Box Hill | Current candidate robustness station, pending final validation |
 
@@ -1340,13 +1394,13 @@ Caulfield and Pakenham were older candidate robustness stations. They are not th
 
 Purpose:
 
-- test whether the corrected fleet-composition findings from Footscray are station-specific;
+- test whether the fleet-composition findings from Footscray are station-specific;
 - present robustness/transferability evidence for the pipeline and fleet-composition findings;
 - keep the section compact for a SIGSPATIAL Applications paper.
 
 Demand and fleet scaling:
 
-- Preserve the corrected Footscray commuter-to-seat ratio rather than forcing the same absolute demand everywhere.
+- Preserve the Footscray commuter-to-seat ratio rather than forcing the same absolute demand everywhere.
 - Footscray uses `586` commuters and an 80-seat reference fleet, or approximately `7.33` commuters per seat.
 - For each additional station, use station-specific commuter demand if available, and choose reference fleet seats to preserve approximately this ratio.
 - If controlled comparison is needed because station-specific demand is unavailable or unreliable, document this explicitly and keep the same commuter-to-seat ratio.
@@ -1355,7 +1409,7 @@ Demand and fleet scaling:
 Temporal demand construction:
 
 - Prefer station-specific Myki/tap-on distributions from the same 2018 dataset.
-- If station-specific Myki distributions are not immediately available, use the corrected Footscray 20-minute slot proportions as a prior applied to the station-specific commuter count.
+- If station-specific Myki distributions are not immediately available, use the Footscray 20-minute slot proportions as a prior applied to the station-specific commuter count.
 - Do not use a uniform synthetic temporal distribution unless explicitly justified later.
 - Preserve the same morning-peak window: `07:00--09:30`.
 - Preserve the same train-aligned/fixed-slot structure: 20-minute slots.
@@ -1367,7 +1421,7 @@ Solver/settings:
   - initial 300-second runtime;
   - initial 15 seeds;
   - initial fixed 20-minute time windows;
-- Treat runtime, seed count, and time-window representation as provisional until corrected Footscray validation is complete.
+- Treat runtime, seed count, and time-window representation as provisional until Footscray validation is complete.
 - Do not redo full calibration for additional robustness stations.
 - If service rate under the reference/balanced fleet is extremely low or extremely high, flag it as a boundary condition and report it rather than silently recalibrating.
 
@@ -1376,12 +1430,11 @@ Compact fleet set for validated robustness stations:
 | Fleet | Seat shares | Role |
 |---|---|---|
 | all-car | S0/M0/C100/MB0 | homogeneous comparator |
-| all-minibus | S0/M0/C0/MB100 | additional homogeneous/extreme comparator |
 | balanced | S25/M25/C25/MB25 | balanced heterogeneous reference |
 | VMT-oriented / minibus-heavy | S25/M0/C0/MB75 | system VMT-oriented representative |
-| low-emission / moped-heavy | S25/M75/C0/MB0 | system energy/CO2-oriented representative |
+| low-emission | S50/M50/C0/MB0 | system energy/CO2-oriented representative |
 
-Do not add all-moped to the multi-station robustness experiment unless explicitly requested later. Do not redefine the representative fleet compositions already specified for the corrected Footscray reruns.
+Do not add all-moped or all-minibus to the multi-station robustness experiment unless explicitly requested later. These homogeneous compositions remain grid diagnostic/extreme cases and are not rerun in capacity or pilot sensitivity. Do not redefine the representative fleet compositions already specified for the Footscray reruns.
 
 Minimum data-quality checks for new stations:
 
@@ -1476,7 +1529,7 @@ Core files:
 
 ```text
 config/footscray_base_config.json
-    Active corrected Footscray experiment configuration.
+    Active Footscray experiment configuration.
 
 config/legacy_melton_base_config.json
     Legacy Melton-era configuration retained for archived and reproducibility workflows.
@@ -1738,18 +1791,18 @@ Immediate next work:
 1. Create and validate this project specification. Completed
 2. Correct station-level Myki filtering to use transaction column `8` (`DimStopLocation.StopLocationID`) and establish Footscray Railway Station (`20025`) as the main paper case. Completed
 3. Build the Footscray road network and the residential/address origin candidate pool for the `>800 m` to `3 km` catchment. Completed
-4. Verify the corrected Footscray commuter extraction for `2018-03-15`, final commuter count, matrix order, and network access distances. Completed: 586 commuters and a validated `587 x 587` matrix
-5. Rerun Footscray seed convergence and runtime diagnostics under corrected column-8 demand. Pending
+4. Verify the Footscray commuter extraction for `2018-03-15`, final commuter count, matrix order, and network access distances. Completed: 586 commuters and a validated `587 x 587` matrix
+5. Rerun Footscray seed convergence and runtime diagnostics under column-8 station-level demand. Pending
 6. Rerun the Footscray fleet-composition experiment and representative-fleet analyses. Pending
 7. Rerun Footscray capacity sensitivity and any required pilot-fleet demand sensitivity. Pending
 8. Retain previous column-7 Melton experiments only as archived/reproducibility context; do not use them as final paper results.
-9. Run deliberate generic-origin robustness checks after the corrected Footscray primary experiments. Planned; generic reachable-node results remain robustness/sensitivity comparisons only.
-10. Validate Williams Landing and Box Hill as the current candidate robustness stations after the corrected Footscray experiment suite is complete. Caulfield and Pakenham remain older candidates only; do not run full 35-composition grids for additional stations unless explicitly requested later.
-11. Generate corrected Footscray paper-facing outputs before any multi-station comparison outputs.
+9. Run deliberate generic-origin robustness checks after the Footscray primary experiments. Planned; generic reachable-node results remain robustness/sensitivity comparisons only.
+10. Validate Williams Landing and Box Hill as the current candidate robustness stations after the Footscray experiment suite is complete. Caulfield and Pakenham remain older candidates only; do not run full 35-composition grids for additional stations unless explicitly requested later.
+11. Generate Footscray paper-facing outputs before any multi-station comparison outputs.
 12. Share updated outputs with supervisors before the next meeting.
 
 TODO: Add mathematical problem formulation to the paper.
 - Define commuters, station, deadlines/time windows, heterogeneous vehicle types, capacities, travel-time matrices, route assignment variables, service/fallback variables, and objective/metrics.
 - Clarify that the implemented solver is PyVRP/HGS and the paper evaluates fleet-composition scenarios rather than proposing a new routing algorithm.
 
-Corrected Footscray fleet-composition results, representative-fleet capacity sensitivity, pilot-fleet demand sensitivity, future multi-station robustness checks, and final cost-related interpretation should use the refined all-electric energy, emissions, cost, and parking evaluation model.
+Footscray fleet-composition results, representative-fleet capacity sensitivity, pilot-fleet demand sensitivity, future multi-station robustness checks, and final cost-related interpretation should use the refined all-electric energy, emissions, cost, and parking evaluation model.
