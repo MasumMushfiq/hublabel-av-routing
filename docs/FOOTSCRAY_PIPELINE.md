@@ -2,6 +2,8 @@
 
 This runbook rebuilds the Footscray data pipeline from raw Myki and OSM inputs through smoke validation. Run commands from the repository root.
 
+Scripted rebuild wrapper: `bash experiments/scripts/run_footscray_pipeline.sh --stage all`
+
 ```bash
 cd /path/to/hub_label
 PYTHON=.venv/bin/python
