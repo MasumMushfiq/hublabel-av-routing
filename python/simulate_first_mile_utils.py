@@ -84,7 +84,7 @@ class ExperimentConfig:
     grid_co2_kg_per_kwh: float
     private_car_speed_kmph: float
     service_horizon: Optional[ServiceHorizonConfig] = None
-    penalty_mode: str = "multiplicative"
+    penalty_mode: str = "none"
     preference_scale_m: int = 500
     cost_model: Optional[CostModel] = None
 
@@ -385,7 +385,7 @@ def smooth_penalty(d_km: float, lower_km: float, upper_km: float,
 def build_cost_matrix(dist_m: np.ndarray,
                       lower_km: float, upper_km: float,
                       alpha: float, beta: float,
-                      penalty_mode: str = "multiplicative",
+                      penalty_mode: str = "none",
                       preference_scale_m: int = 500) -> np.ndarray:
     M = dist_m.shape[0]
     cost = np.zeros((M, M), dtype=np.int64)
