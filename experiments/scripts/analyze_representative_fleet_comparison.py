@@ -2,9 +2,9 @@
 """
 Build a compact paper-facing comparison table for selected representative fleets.
 
-The script reads an existing fleet-composition-grid summary and extracts only the
-four representative fleets used in the SIGSPATIAL 2026 AV feeder paper framing.
-It does not rerun simulations or modify experiment outputs.
+The script reads the existing Footscray 80-seat fleet-composition-grid summary
+and extracts only the four representative fleets used in the SIGSPATIAL 2026
+AV feeder paper. It does not rerun simulations or modify experiment outputs.
 """
 
 from __future__ import annotations
@@ -18,7 +18,8 @@ from typing import Iterable
 
 
 DEFAULT_INPUT_CSV = Path(
-    "experiments/results/fleet_composition_grid_224seats/fleet_composition_grid_summary.csv"
+    "experiments/results/footscray/fleet_composition_grid_footscray_80seats/"
+    "fleet_composition_grid_summary.csv"
 )
 DEFAULT_OUTPUT_DIR = Path(
     "experiments/results/analysis/representative_fleet_comparison"
@@ -28,22 +29,22 @@ REPRESENTATIVE_FLEETS = [
     {
         "role": "All-car comparator",
         "condition": "comp_S0_M0_C100_MB0",
-        "vehicles": 56,
+        "vehicles": 20,
     },
     {
         "role": "Balanced",
         "condition": "comp_S25_M25_C25_MB25",
-        "vehicles": 105,
+        "vehicles": 37,
     },
     {
         "role": "VMT-oriented",
         "condition": "comp_S25_M0_C0_MB75",
-        "vehicles": 77,
+        "vehicles": 26,
     },
     {
         "role": "Low-emission",
-        "condition": "comp_S25_M75_C0_MB0",
-        "vehicles": 140,
+        "condition": "comp_S50_M50_C0_MB0",
+        "vehicles": 60,
     },
 ]
 
@@ -123,6 +124,20 @@ def choose_optional_field(rows: list[dict[str, str]], candidates: list[str]) -> 
     return None
 
 
+def corresponding_std_field(
+    rows: list[dict[str, str]], mean_field: str | None
+) -> str | None:
+    """Return the matching summary standard-deviation column when available."""
+    if mean_field is None:
+        return None
+    candidate = (
+        mean_field[:-5] + "_std"
+        if mean_field.endswith("_mean")
+        else mean_field + "_std"
+    )
+    return candidate if candidate in rows[0] else None
+
+
 def choose_system_reduction_field(
     rows: list[dict[str, str]],
     reduction_field: str,
@@ -157,6 +172,13 @@ def normalize_percent(value: float) -> float:
     if abs(value) <= 1.5:
         return value * 100.0
     return value
+
+
+def normalize_percent_std(std_value: float, mean_value: float) -> float:
+    """Scale a percentage std consistently with its corresponding mean."""
+    if math.isnan(std_value) or math.isnan(mean_value):
+        return std_value
+    return std_value * 100.0 if abs(mean_value) <= 1.5 else std_value
 
 
 def format_float(value: float, digits: int = 1) -> str:
@@ -229,28 +251,87 @@ def build_rows(
         if derive_co2_reduction:
             co2_reduction = -co2_reduction
 
+        vehicles = to_float(source.get("total_fleet_vehicles"))
+        if math.isnan(vehicles):
+            vehicles = float(fleet["vehicles"])
+
         output = {
             "Fleet role": fleet["role"],
             "Seat shares": parse_seat_shares(fleet["condition"]),
-            "Vehicles": str(fleet["vehicles"]),
+            "Vehicles": format_count(vehicles),
             "Service rate (%)": format_float(service_rate),
             "Fallback private cars": format_count(fallback_private_cars),
             "System VMT reduction (%)": format_float(vmt_reduction),
             "System CO2 reduction (%)": format_float(co2_reduction),
         }
 
+        std_specs = [
+            (
+                "Service rate std",
+                "service_rate_std",
+                "service_rate_mean",
+                True,
+                1,
+            ),
+            (
+                "Fallback private cars std",
+                "fallback_private_cars_std",
+                None,
+                False,
+                1,
+            ),
+            (
+                "System VMT reduction std",
+                corresponding_std_field(summary_rows, vmt_field),
+                vmt_field,
+                True,
+                1,
+            ),
+            (
+                "System CO2 reduction std",
+                corresponding_std_field(summary_rows, co2_field),
+                co2_field,
+                True,
+                1,
+            ),
+        ]
+        for label, field, mean_field, is_percent, digits in std_specs:
+            if field is not None and field in source:
+                value = to_float(source[field])
+                if is_percent and mean_field is not None:
+                    value = normalize_percent_std(value, to_float(source[mean_field]))
+                output[label] = format_float(value, digits)
+
         if ivt_field is not None:
             output["Average in-vehicle time (min)"] = format_float(
                 to_float(source[ivt_field])
             )
+            ivt_std_field = corresponding_std_field(summary_rows, ivt_field)
+            if ivt_std_field is not None:
+                output["Average in-vehicle time std"] = format_float(
+                    to_float(source[ivt_std_field])
+                )
         if parking_field is not None:
             output["Station commuter parking reduction (%)"] = format_float(
                 normalize_percent(to_float(source[parking_field]))
             )
+            parking_std_field = corresponding_std_field(summary_rows, parking_field)
+            if parking_std_field is not None:
+                output["Station commuter parking reduction std"] = format_float(
+                    normalize_percent_std(
+                        to_float(source[parking_std_field]),
+                        to_float(source[parking_field]),
+                    )
+                )
         if cost_field is not None:
             output["AV total operating cost (AUD)"] = format_float(
                 to_float(source[cost_field]), digits=0
             )
+            cost_std_field = corresponding_std_field(summary_rows, cost_field)
+            if cost_std_field is not None:
+                output["AV total operating cost std"] = format_float(
+                    to_float(source[cost_std_field]), digits=0
+                )
 
         output_rows.append(output)
 
@@ -287,7 +368,11 @@ def write_latex(path: Path, rows: list[dict[str, str]]) -> None:
     lines = [
         r"\begin{table*}[t]",
         r"\centering",
-        r"\caption{Representative fleet comparison.}",
+        (
+            r"\caption{Representative fleets from the Footscray 80-seat grid "
+            r"(means over 15 seeds). System metrics include adjusted AV routes "
+            r"plus fallback private-car trips.}"
+        ),
         r"\label{tab:representative-fleet-comparison}",
         rf"\begin{{tabular}}{{{column_spec}}}",
         r"\toprule",
@@ -356,6 +441,7 @@ def main() -> None:
     write_latex(output_tex, output_rows)
 
     print("All four representative fleets were found.")
+    print("Case study: Footscray 80-seat fleet-composition grid (15 seeds).")
     print(f"Wrote CSV: {output_csv}")
     print(f"Wrote LaTeX: {output_tex}")
     print(f"Service field: {REQUIRED_FIELDS['service_rate']}")
@@ -365,7 +451,7 @@ def main() -> None:
         f"{vmt_field}{' (derived as negative change)' if derive_vmt_reduction else ''}"
     )
     print(
-        "System CO2 reduction field: "
+        "System CO2 reduction field (reported as \\COtwo{} in LaTeX): "
         f"{co2_field}{' (derived as negative change)' if derive_co2_reduction else ''}"
     )
     print(f"IVT field used: {ivt_field or 'unavailable'}")
