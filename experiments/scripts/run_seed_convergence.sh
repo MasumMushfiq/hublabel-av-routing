@@ -41,7 +41,7 @@ echo "╔═══════════════════════�
 echo "║        PyVRP SEED CONVERGENCE ANALYSIS                         ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo "  Fleet    : Footscray 80-seat reference fleet (minibus capacity 10)"
-echo "  Demand   : corrected Footscray residential-origin demand  |  Time: ${TIME_LIMIT_SECONDS}s"
+echo "  Demand   : Footscray residential-origin demand  |  Time: ${TIME_LIMIT_SECONDS}s"
 echo "  Experiment folder: $EXPERIMENT"
 echo "  Seeds    : 1 – $N_SEEDS  |  Total: $TOTAL jobs  |  Parallel: $PARALLEL_JOBS workers"
 

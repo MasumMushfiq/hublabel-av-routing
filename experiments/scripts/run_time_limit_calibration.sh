@@ -46,7 +46,7 @@ echo "╔═══════════════════════�
 echo "║        PyVRP TIME LIMIT CALIBRATION                            ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo "  Fleet    : Footscray 80-seat reference fleet (minibus capacity 10)"
-echo "  Demand   : corrected Footscray residential-origin demand"
+echo "  Demand   : Footscray residential-origin demand"
 echo "  Limits   : ${TIME_LIMITS[*]} seconds  |  Seeds: $N_SEEDS"
 echo "  Experiment folder: $EXPERIMENT"
 echo "  Total    : $TOTAL jobs  |  Parallel: $PARALLEL_JOBS workers"
@@ -134,10 +134,27 @@ echo "╔═══════════════════════�
 echo "║        EXPERIMENT COMPLETE                                      ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 printf "  Total time: %ds\n" $((END - START))
-FAILED=$(find "$RESULTS_DIR" -name "simulation.log" \
-    | xargs grep -l "Error\|Traceback" 2>/dev/null | wc -l | tr -d " ")
-[[ "$FAILED" -gt 0 ]] && echo "  WARNING: $FAILED run(s) may have failed" \
-    || echo "  No failures detected"
+MISSING_METRICS=0
+SUSPICIOUS_LOGS=0
+while read -r tl seed; do
+    out_dir="$RESULTS_DIR/tl_${tl}s/run_$seed"
+    if [[ ! -s "$out_dir/metrics.json" ]]; then
+        printf "  WARNING: missing or empty metrics: tl_%ss/run_%s\n" "$tl" "$seed" >&2
+        MISSING_METRICS=$((MISSING_METRICS + 1))
+    fi
+    if [[ -f "$out_dir/simulation.log" ]] && \
+       grep -Eqi 'ERROR|Traceback|Exception|failed' "$out_dir/simulation.log"; then
+        SUSPICIOUS_LOGS=$((SUSPICIOUS_LOGS + 1))
+    fi
+done < "$JOB_FILE"
+
+if [[ "$MISSING_METRICS" -gt 0 ]]; then
+    echo "  WARNING: $MISSING_METRICS expected run(s) lack a non-empty metrics.json"
+else
+    echo "  All $TOTAL expected metrics.json files are present"
+fi
+[[ "$SUSPICIOUS_LOGS" -gt 0 ]] && \
+    echo "  WARNING: $SUSPICIOUS_LOGS simulation log(s) contain error keywords"
 echo ""
 
 echo "  Next: $PYTHON_BIN experiments/scripts/plot_time_limit_calibration.py --results-dir $RESULTS_DIR --out $RESULTS_DIR/plots"

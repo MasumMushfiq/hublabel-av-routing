@@ -9,9 +9,9 @@ For each metric, shows:
   - Running mean as seeds accumulate (solid line)
   - ±1σ running band (shaded)
   - Final mean (dashed)
-  - ±1% tolerance band (grey dotted)
+  - Metric-specific tolerance band (grey dotted)
   - Convergence point annotation (first seed where running mean
-    stays within ±1% of the final mean for all subsequent seeds)
+    stays within tolerance of the final mean for all subsequent seeds)
 
 Produces:
   fig_seed_convergence.pdf   — publication figure (4-panel)
@@ -20,7 +20,9 @@ Produces:
     fig_seed_convergence_vmt.png — standalone VMT reduction figure
 
 Usage (from hub_label/ root):
-  python3 experiments/scripts/plot_seed_convergence.py
+  python3 experiments/scripts/plot_seed_convergence.py \
+    --results-dir experiments/results/footscray/seed_convergence_footscray_80seats_50seeds \
+    --out experiments/results/footscray/seed_convergence_footscray_80seats_50seeds/plots
 """
 
 import os
@@ -164,17 +166,27 @@ def load_series(results_dir):
 
 # ── Convergence helper ────────────────────────────────────────────────────────
 
-def find_convergence(running_means, final_mean, tol=0.01):
+def find_stable_from_run(running_means, final_mean, tolerance):
     """
-    First index i where the running mean stays within tol of final_mean
-    for all j >= i.  Returns (seed_number, index) or (None, None).
+    First index i where every running mean from i onward is within the
+    absolute tolerance of the final mean. Returns (run number, index).
     """
-    if final_mean == 0:
+    running_means = np.asarray(running_means, dtype=float)
+    if (
+        running_means.size == 0
+        or not np.isfinite(final_mean)
+        or not np.isfinite(tolerance)
+        or tolerance < 0
+        or not np.all(np.isfinite(running_means))
+    ):
         return None, None
-    for i, rm in enumerate(running_means):
-        if all(abs(running_means[j] - final_mean) / abs(final_mean) <= tol
-               for j in range(i, len(running_means))):
-            return i + 1, i   # seed number is 1-indexed
+
+    within_tolerance = np.abs(running_means - final_mean) <= tolerance
+    stable_suffix = np.logical_and.accumulate(within_tolerance[::-1])[::-1]
+    stable_indices = np.flatnonzero(stable_suffix)
+    if stable_indices.size:
+        index = int(stable_indices[0])
+        return index + 1, index
     return None, None
 
 
@@ -186,13 +198,15 @@ def draw_convergence_panel(
     ylabel,
     title,
     color,
-    tol=0.01,
+    tolerance=1.0,
+    tolerance_label=r"$\pm$1 percentage point",
     line_width=1.8,
     marker_size=None,
     label_size=None,
     title_size=None,
     tick_size=None,
     legend_size=8,
+    legend_loc="upper right",
     legend_labels=None,
 ):
     """
@@ -200,7 +214,7 @@ def draw_convergence_panel(
       - Running mean (solid)
       - ±1σ running band (shaded)
       - Final mean (dashed)
-      - ±1% tolerance band (dotted grey)
+      - Metric-specific tolerance band (dotted grey)
       - Convergence point (vertical dotted line + annotation)
     """
     n = len(values)
@@ -212,8 +226,8 @@ def draw_convergence_panel(
                              for i in range(n)])
 
     final_mean = running_mean[-1]
-    tol_hi = final_mean * (1 + tol)
-    tol_lo = final_mean * (1 - tol)
+    tol_hi = final_mean + tolerance
+    tol_lo = final_mean - tolerance
 
     # ±1σ band
     ax.fill_between(seeds,
@@ -233,13 +247,15 @@ def draw_convergence_panel(
                alpha=0.7,
                label=(legend_labels or {}).get("final_mean", f"Final mean ({final_mean:.2f})"))
 
-    # ±1% tolerance band
+    # Absolute tolerance band around the final all-seed mean.
     ax.axhline(tol_hi, color="grey", ls=":", lw=1.0, alpha=0.7)
     ax.axhline(tol_lo, color="grey", ls=":", lw=1.0, alpha=0.7,
-               label=(legend_labels or {}).get("tolerance", r"$\pm$1% tolerance"))
+               label=(legend_labels or {}).get("tolerance", tolerance_label))
 
     # Convergence annotation
-    conv_seed, conv_idx = find_convergence(running_mean, final_mean, tol=tol)
+    conv_seed, conv_idx = find_stable_from_run(
+        running_mean, final_mean, tolerance=tolerance
+    )
     # if conv_seed is not None:
     #     ax.axvline(conv_seed, color="#d62728", ls=":", lw=1.4,
     #                alpha=0.8, zorder=4,
@@ -263,7 +279,7 @@ def draw_convergence_panel(
     ax.xaxis.set_minor_locator(AutoMinorLocator())
     ax.yaxis.set_minor_locator(AutoMinorLocator())
     ax.grid(axis="y", ls="--")
-    ax.legend(fontsize=legend_size, frameon=False, loc="upper right")
+    ax.legend(fontsize=legend_size, frameon=False, loc=legend_loc)
 
 
 # ── Combined 4-panel figure ───────────────────────────────────────────────────
@@ -278,28 +294,29 @@ def fig_combined(series, n, out_dir):
 
     PANELS = [
         ("vmt_red",      "System VMT reduction vs private (%)",
-         "(a) System VMT Reduction"),
+         "(a) System VMT Reduction", 1.0, r"$\pm$1 percentage point"),
         ("service_rate", "Service rate (%)",
-         "(b) Service Rate"),
+         "(b) Service Rate", 1.0, r"$\pm$1 percentage point"),
         (r"co2_red",     r"System CO$_2$ reduction vs private (%)",
-         r"(c) System CO$_2$ Reduction"),
+         r"(c) System CO$_2$ Reduction", 1.0, r"$\pm$1 percentage point"),
         ("avg_pax",      "Avg passengers per trip",
-         "(d) Pooling Efficiency"),
+         "(d) Pooling Efficiency", 0.05, r"$\pm$0.05 passengers/trip"),
     ]
 
     fig = plt.figure(figsize=(7.1, 5.2))
     gs  = gridspec.GridSpec(2, 2, figure=fig, hspace=0.55, wspace=0.32)
     axes = [fig.add_subplot(gs[r, c]) for r in range(2) for c in range(2)]
 
-    for ax, (key, ylabel, title) in zip(axes, PANELS):
+    for ax, (key, ylabel, title, tolerance, tolerance_label) in zip(axes, PANELS):
         draw_convergence_panel(
             ax, series[key], ylabel, title,
-            color=COLORS[key], tol=0.01
+            color=COLORS[key], tolerance=tolerance,
+            tolerance_label=tolerance_label,
         )
 
     fig.suptitle(
         "Seed Convergence Analysis — PyVRP / HGS, Selected Time Limit\n"
-        "Melton Station · 1465 Myki Commuters · 224 Seats (Balanced Mix)",
+        f"Footscray first-mile experiment · {n} solver seeds",
         fontsize=11, y=1.02,
     )
 
@@ -316,18 +333,20 @@ def fig_vmt_reduction(series, n, out_dir):
         "System VMT reduction (%)",
         "",
         color="#4CAF50",
-        tol=0.01,
-        line_width=2.3,
-        marker_size=5.5,
+        tolerance=1.0,
+        tolerance_label=r"$\pm$1 percentage point",
+        line_width=2.0,
+        marker_size=3.0,
         label_size=13,
         title_size=14,
         tick_size=11,
-        legend_size=10,
+        legend_size=8,
+        legend_loc="lower right",
         legend_labels={
             "running_sd": r"$\pm$1 SD",
             "running_mean": "Running mean",
             "final_mean": "Final mean",
-            "tolerance": r"$\pm$1% band",
+            "tolerance": r"$\pm$1 %-point band",
         },
     )
     
@@ -342,30 +361,55 @@ def fig_vmt_reduction(series, n, out_dir):
 
 # ── Console summary ──────────────────────────────────────────────────────────
 
-def print_summary(series, n):
-    print(f"\n  Seeds loaded: {n}")
-    print(f"\n  {'Metric':<25}  {'Mean':>8}  {'Std':>7}  {'Min':>8}  {'Max':>8}  {'Converges'}") 
-    print(f"  {'-'*72}")
-    labels = {
-        "service_rate": "Service rate (%)",
-        "vmt_red":      "System VMT red. (%)",
-        "energy_red":   "System kWh red. (%)",
-        "co2_red":      "System CO2 red. (%)",
-        "avg_pax":      "Avg pax/trip",
-        "fallback_private_cars": "Fallback cars",
-    }
-    for key, label in labels.items():
+SUMMARY_METRICS = {
+    "service_rate": ("Service rate (%)", 1.0, "absolute ±1 percentage point"),
+    "vmt_red": ("System VMT red. (%)", 1.0, "absolute ±1 percentage point"),
+    "energy_red": ("System kWh red. (%)", 1.0, "absolute ±1 percentage point"),
+    "co2_red": ("System CO2 red. (%)", 1.0, "absolute ±1 percentage point"),
+    "avg_pax": ("Avg pax/trip", 0.05, "absolute ±0.05 passengers/trip"),
+    "fallback_private_cars": ("Fallback cars", 1.0, "absolute ±1 fallback car"),
+}
+
+
+def build_summary(series, n):
+    rows = []
+    for key, (label, tolerance, tolerance_description) in SUMMARY_METRICS.items():
         vals = series[key]
-        running_mean = np.array([np.mean(vals[:i+1]) for i in range(n)])
-        final = running_mean[-1]
-        conv_seed, _ = find_convergence(running_mean, final, tol=0.01)
-        conv_str = f"{conv_seed} runs" if conv_seed else "not converged"
-        print(f"  {label:<25}  "
-              f"{np.mean(vals):>8.2f}  "
-              f"{np.std(vals, ddof=1):>7.3f}  "
-              f"{np.min(vals):>8.2f}  "
-              f"{np.max(vals):>8.2f}  "
-              f"{conv_str}")
+        running_mean = np.array([np.mean(vals[:i + 1]) for i in range(n)])
+        final_mean = running_mean[-1]
+        stable_from_run, _ = find_stable_from_run(
+            running_mean, final_mean, tolerance=tolerance
+        )
+        rows.append({
+            "metric": label,
+            "final_mean": final_mean,
+            "std": np.std(vals, ddof=1),
+            "min": np.min(vals),
+            "max": np.max(vals),
+            "tolerance_description": tolerance_description,
+            "stable_from_run": stable_from_run,
+        })
+    return pd.DataFrame(rows)
+
+
+def print_summary(summary, n):
+    print(f"\n  Seeds loaded: {n}")
+    print(
+        f"\n  {'Metric':<25}  {'Mean':>8}  {'Std':>7}  {'Min':>8}  "
+        f"{'Max':>8}  {'Stable from':>11}  Tolerance"
+    )
+    print(f"  {'-' * 116}")
+    for row in summary.itertuples(index=False):
+        stable = (
+            f"{int(row.stable_from_run)} runs"
+            if pd.notna(row.stable_from_run)
+            else "not stable"
+        )
+        print(
+            f"  {row.metric:<25}  {row.final_mean:>8.2f}  {row.std:>7.3f}  "
+            f"{row.min:>8.2f}  {row.max:>8.2f}  {stable:>11}  "
+            f"{row.tolerance_description}"
+        )
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -373,9 +417,15 @@ def print_summary(series, n):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--results-dir",
-                   default="experiments/results/seed_convergence_224seats")
+                   default=(
+                       "experiments/results/footscray/"
+                       "seed_convergence_footscray_80seats_50seeds"
+                   ))
     p.add_argument("--out",
-                   default="experiments/results/seed_convergence_224seats/plots")
+                   default=(
+                       "experiments/results/footscray/"
+                       "seed_convergence_footscray_80seats_50seeds/plots"
+                   ))
     args = p.parse_args()
 
     setup_pub_style()
@@ -386,11 +436,15 @@ def main():
         print("ERROR: no data found. Check --results-dir path.")
         return
 
-    print_summary(series, n)
+    summary = build_summary(series, n)
+    print_summary(summary, n)
 
     print(f"\nGenerating plots -> {args.out}")
     fig_vmt_reduction(series, n, args.out)
     fig_combined(series, n, args.out)
+    summary_path = os.path.join(args.out, "seed_convergence_summary.csv")
+    summary.to_csv(summary_path, index=False)
+    print(f"  Saved: {summary_path}")
     print("\nDone.")
 
 

@@ -2,7 +2,7 @@
 """
 plot_fleet_composition_grid.py
 ───────────────────────────────
-Aggregates and plots results for the 224-seat fleet composition grid.
+Aggregates and plots the active Footscray 80-seat fleet-composition grid.
 Current framing: service rate and fallback private cars are interpreted
 alongside system-level VMT, energy, CO2, and cost metrics.
 
@@ -25,12 +25,14 @@ Produces:
     top_efficiency_high_service.csv  — optional high-service screen, sorted by VMT
 
 Usage (from hub_label/ root):
-  python3 experiments/scripts/plot_fleet_composition_grid.py
+  python3 experiments/scripts/plot_fleet_composition_grid.py \
+      --results-dir experiments/results/footscray/fleet_composition_grid_footscray_80seats
 """
 
 import os
 import json
 import argparse
+import re
 
 import numpy as np
 import pandas as pd
@@ -42,8 +44,7 @@ from matplotlib.ticker import AutoMinorLocator
 matplotlib.rcParams["pdf.fonttype"] = 42
 matplotlib.rcParams["ps.fonttype"] = 42
 
-RESULTS_ROOT = "experiments/results/fleet_composition_grid_224seats"
-CONFIGS_DIR = "experiments/results/fleet_composition_grid_224seats/configs"
+RESULTS_ROOT = "experiments/results/footscray/fleet_composition_grid_footscray_80seats"
 
 HIGH_SERVICE_SCREENING_THRESHOLD = 97.0
 
@@ -107,7 +108,7 @@ REPRESENTATIVE_FLEETS = [
         "condition": "comp_S0_M0_C100_MB0",
         "seat_shares": "S0/M0/C100/MB0",
         "shares": (0, 0, 100, 0),
-        "expected_vehicles": 56,
+        "expected_vehicles": 20,
         "marker": "o",
     },
     {
@@ -116,7 +117,7 @@ REPRESENTATIVE_FLEETS = [
         "condition": "comp_S25_M25_C25_MB25",
         "seat_shares": "S25/M25/C25/MB25",
         "shares": (25, 25, 25, 25),
-        "expected_vehicles": 105,
+        "expected_vehicles": 37,
         "marker": "s",
     },
     {
@@ -125,16 +126,16 @@ REPRESENTATIVE_FLEETS = [
         "condition": "comp_S25_M0_C0_MB75",
         "seat_shares": "S25/M0/C0/MB75",
         "shares": (25, 0, 0, 75),
-        "expected_vehicles": 77,
+        "expected_vehicles": 26,
         "marker": "^",
     },
     {
         "role": "Low-emission",
         "label": "Low-emission",
-        "condition": "comp_S25_M75_C0_MB0",
-        "seat_shares": "S25/M75/C0/MB0",
-        "shares": (25, 75, 0, 0),
-        "expected_vehicles": 140,
+        "condition": "comp_S50_M50_C0_MB0",
+        "seat_shares": "S50/M50/C0/MB0",
+        "shares": (50, 50, 0, 0),
+        "expected_vehicles": 60,
         "marker": "D",
     },
 ]
@@ -176,10 +177,28 @@ def savefig(fig, base_path):
 # ── Aggregation ──────────────────────────────────────────────────────────────
 
 def load_metadata(configs_dir=None):
-    meta_path = os.path.join(configs_dir or CONFIGS_DIR, "composition_metadata.csv")
+    if configs_dir is None:
+        return None
+    meta_path = os.path.join(configs_dir, "composition_metadata.csv")
     if os.path.isfile(meta_path):
         return pd.read_csv(meta_path).set_index("condition")
     return None
+
+
+LABEL_PATTERN = re.compile(r"^comp_S(\d+)_M(\d+)_C(\d+)_MB(\d+)$")
+
+
+def parse_shares(condition):
+    match = LABEL_PATTERN.fullmatch(condition)
+    if not match:
+        return {}
+    scooter, moped, car, minibus = (int(value) for value in match.groups())
+    return {
+        "target_scooter_share": scooter,
+        "target_moped_share": moped,
+        "target_car_share": car,
+        "target_minibus_share": minibus,
+    }
 
 
 def _first_number(*values, default=0.0):
@@ -271,12 +290,15 @@ def aggregate(results_dir, configs_dir=None):
         cond_dir = os.path.join(results_dir, cond)
         run_metrics = []
 
-        for run_dir in sorted(os.listdir(cond_dir)):
-            mpath = os.path.join(cond_dir, run_dir, "metrics.json")
-            bpath = os.path.join(cond_dir, run_dir, "baseline.json")
-            cpath = os.path.join(cond_dir, run_dir, "comparison.json")
-            if not os.path.isfile(mpath):
-                continue
+        metric_paths = sorted(
+            os.path.join(root, "metrics.json")
+            for root, _, files in os.walk(cond_dir)
+            if "metrics.json" in files
+        )
+        for mpath in metric_paths:
+            run_dir = os.path.dirname(mpath)
+            bpath = os.path.join(run_dir, "baseline.json")
+            cpath = os.path.join(run_dir, "comparison.json")
 
             with open(mpath) as f:
                 m = json.load(f)
@@ -380,7 +402,7 @@ def aggregate(results_dir, configs_dir=None):
             if pd.isna(pooling) and pd.notna(solo) and pd.notna(shared) and (solo + shared) > 0:
                 pooling = shared / (solo + shared) * 100
 
-            run_path = os.path.join(cond_dir, run_dir)
+            run_path = run_dir
             system_vmt_change = _system_change_pct(
                 comparison, m, "vmt", system_vmt, baseline_vmt, run_path
             )
@@ -448,7 +470,7 @@ def aggregate(results_dir, configs_dir=None):
         n = len(run_metrics)
         keys = sorted({key for row in run_metrics for key in row})
         arr = {k: np.array([r.get(k, np.nan) for r in run_metrics], dtype=float) for k in keys}
-        row = {"condition": cond, "n_runs": n}
+        row = {"condition": cond, "label": cond, "n_runs": n, "runs": n}
         for k, vals in arr.items():
             row[f"{k}_mean"] = np.nanmean(vals)
             row[f"{k}_std"] = np.nanstd(vals, ddof=1) if n > 1 else float("nan")
@@ -456,6 +478,8 @@ def aggregate(results_dir, configs_dir=None):
         if meta is not None and cond in meta.index:
             for col in meta.columns:
                 row[col] = meta.loc[cond, col]
+        for col, value in parse_shares(cond).items():
+            row.setdefault(col, value)
         row["composition_label"] = short_label(cond)
 
         rows.append(row)
@@ -800,7 +824,9 @@ def representative_rows(df):
 
 
 def fig_system_tradeoff_representatives(df, out_dir):
-    fig, ax = plt.subplots(figsize=(6.8, 4.8), constrained_layout=True)
+    # Size the PDF near an ACM single-column width so LaTeX does not shrink
+    # the typography when included with width=\linewidth.
+    fig, ax = plt.subplots(figsize=(3.35, 2.85), constrained_layout=True)
     reps = representative_rows(df)
     rep_conditions = {str(row["condition"]) for _, row in reps}
     bg = df[~df["condition"].astype(str).isin(rep_conditions)]
@@ -809,7 +835,7 @@ def fig_system_tradeoff_representatives(df, out_dir):
         bg["system_vmt_reduction_pct_mean"],
         bg["system_co2_reduction_pct_mean"],
         c=bg["service_rate_mean"],
-        s=46,
+        s=34,
         cmap="viridis",
         vmin=70,
         vmax=99,
@@ -818,9 +844,9 @@ def fig_system_tradeoff_representatives(df, out_dir):
         linewidths=0.35,
         zorder=2,
     )
-    cbar = fig.colorbar(sc, ax=ax, shrink=0.85, pad=0.02)
-    cbar.set_label("Service rate (%)", fontsize=10)
-    cbar.ax.tick_params(labelsize=9)
+    cbar = fig.colorbar(sc, ax=ax, shrink=0.88, pad=0.025)
+    cbar.set_label("Service rate (%)", fontsize=9.5)
+    cbar.ax.tick_params(labelsize=8.5)
 
     offsets = {
         "All-car": (-18, -13),
@@ -849,13 +875,13 @@ def fig_system_tradeoff_representatives(df, out_dir):
         ax.scatter(
             [x],
             [y],
-            s=145,
+            s=92,
             marker=rep["marker"],
             c=[row["service_rate_mean"]],
             cmap=sc.cmap,
             norm=sc.norm,
             edgecolors="black",
-            linewidths=1.7,
+            linewidths=1.25,
             zorder=5,
         )
         dx, dy = offsets.get(rep["label"], (10, 10))
@@ -866,7 +892,7 @@ def fig_system_tradeoff_representatives(df, out_dir):
             textcoords="offset points",
             ha="right" if dx < 0 else "left",
             va="center",
-            fontsize=8.0,
+            fontsize=8.5,
             arrowprops=dict(arrowstyle="-", color="#666666", lw=0.7, alpha=0.9),
             zorder=6,
         )
@@ -884,8 +910,10 @@ def fig_system_tradeoff_representatives(df, out_dir):
         color="#555555",
         alpha=0.85,
     )
-    ax.set_xlabel("System VMT reduction (%)")
-    ax.set_ylabel(r"System CO$_2$ reduction (%)")
+    ax.set_xlabel("System VMT reduction (%)", fontsize=10.5)
+    ax.set_ylabel(r"System CO$_2$ reduction (%)", fontsize=10.5)
+    ax.tick_params(axis="both", which="major", labelsize=9.0)
+    ax.tick_params(axis="both", which="minor", labelsize=8.5)
     ax.grid(ls="--", alpha=0.30)
     ax.yaxis.set_minor_locator(AutoMinorLocator())
     ax.xaxis.set_minor_locator(AutoMinorLocator())
@@ -979,6 +1007,8 @@ def make_representative_table(df, results_dir):
 
 REPORT_COLS = [
     "condition",
+    "label",
+    "runs",
     "composition_label",
     "target_scooter_share", "target_moped_share",
     "target_car_share", "target_minibus_share",
@@ -1030,8 +1060,12 @@ REPORT_COLS = [
     "pooling_rate_std",
     "av_cost_per_served_commuter_mean",
     "av_cost_per_served_commuter_std",
+    "av_cost_per_commuter_total_mean",
+    "av_cost_per_commuter_total_std",
     "station_parking_reduction_pct_mean",
     "station_parking_reduction_pct_std",
+    "net_parking_reduction_pct_if_fleet_stored_at_station_mean",
+    "net_parking_reduction_pct_if_fleet_stored_at_station_std",
     "av_total_operating_cost_mean",
     "av_total_operating_cost_std",
     "avg_passengers_per_trip_mean",
@@ -1186,13 +1220,16 @@ def print_field_availability(availability):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--results-dir", default=RESULTS_ROOT)
-    p.add_argument("--configs-dir", default=CONFIGS_DIR)
-    p.add_argument("--out", default=os.path.join(RESULTS_ROOT, "plots"))
+    p.add_argument("--configs-dir", default=None)
+    p.add_argument("--out", default=None)
     args = p.parse_args()
+
+    configs_dir = args.configs_dir or os.path.join(args.results_dir, "configs")
+    out_dir = args.out or os.path.join(args.results_dir, "plots")
 
     setup_pub_style()
     print("Aggregating fleet composition grid results...")
-    df, missing, availability = aggregate(args.results_dir, args.configs_dir)
+    df, missing, availability = aggregate(args.results_dir, configs_dir)
 
     if df.empty:
         print("ERROR: no data found. Check --results-dir path.")
@@ -1205,20 +1242,20 @@ def main():
     print_summary(df, missing)
     print_field_availability(availability)
 
-    print(f"\nGenerating plots -> {args.out}")
-    fig_combined(df, args.out)
-    fig_tradeoff(df, args.out)
-    fig_service_fallback(df, args.out)
-    fig_vmt_co2(df, args.out)
-    fig_system_tradeoff_representatives(df, args.out)
+    print(f"\nGenerating plots -> {out_dir}")
+    fig_combined(df, out_dir)
+    fig_tradeoff(df, out_dir)
+    fig_service_fallback(df, out_dir)
+    fig_vmt_co2(df, out_dir)
+    fig_system_tradeoff_representatives(df, out_dir)
 
     rep_csv_path, rep_tex_path = make_representative_table(df, args.results_dir)
-    make_service_first_table(df, args.out)
-    make_practical_efficiency_table(df, args.out)
+    make_service_first_table(df, out_dir)
+    make_practical_efficiency_table(df, out_dir)
 
     print("\nPaper-facing outputs:")
-    print(f"  {os.path.join(args.out, 'fleet_composition_tradeoff_system_vmt_co2.pdf')}")
-    print(f"  {os.path.join(args.out, 'fleet_composition_tradeoff_system_vmt_co2.png')}")
+    print(f"  {os.path.join(out_dir, 'fleet_composition_tradeoff_system_vmt_co2.pdf')}")
+    print(f"  {os.path.join(out_dir, 'fleet_composition_tradeoff_system_vmt_co2.png')}")
     print(f"  {rep_csv_path}")
     print(f"  {rep_tex_path}")
 

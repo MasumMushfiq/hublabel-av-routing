@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ARCHIVED / NOT ACTIVE FOR CORRECTED FOOTSCRAY PAPER WORKFLOW.
+# ARCHIVED / NOT ACTIVE FOR THE FOOTSCRAY PAPER WORKFLOW.
 # Retained only for historical legacy Melton capacity diagnostics/reproducibility.
-# Do not use for corrected Footscray experiments.
+# Do not use for Footscray experiments.
 
 # Temporary capacity-sensitivity runtime diagnostic.
 #

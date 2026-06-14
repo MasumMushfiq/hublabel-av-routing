@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ARCHIVED / NOT ACTIVE FOR CORRECTED FOOTSCRAY PAPER WORKFLOW.
+# ARCHIVED / NOT ACTIVE FOR THE FOOTSCRAY PAPER WORKFLOW.
 # Retained only for historical legacy Melton penalty/fleet diagnostics/reproducibility.
-# Do not use for corrected Footscray experiments.
+# Do not use for Footscray experiments.
 
 TOTAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 PARALLEL_JOBS=${PARALLEL_JOBS:-$(( TOTAL_CORES > 2 ? TOTAL_CORES - 2 : 1 ))}

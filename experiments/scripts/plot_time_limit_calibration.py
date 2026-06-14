@@ -18,6 +18,7 @@ Usage (from hub_label/ root):
 import os
 import json
 import argparse
+import re
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -29,8 +30,7 @@ from matplotlib.ticker import AutoMinorLocator
 matplotlib.rcParams["pdf.fonttype"] = 42
 matplotlib.rcParams["ps.fonttype"]  = 42
 
-TIME_LIMITS = [10, 20, 30, 60, 120, 180, 240, 300, 450, 600]
-X_LABELS    = ["10", "20", "30", "60", "120", "180", "240", "300", "450", "600"]
+TIME_LIMIT_DIR_PATTERN = re.compile(r"^tl_(\d+)s$")
 
 
 def setup_pub_style():
@@ -63,9 +63,24 @@ def savefig(fig, base_path):
     print(f"  Saved: {base_path}.png")
 
 
+def discover_time_limits(results_dir):
+    time_limits = []
+    for entry in os.scandir(results_dir):
+        if not entry.is_dir():
+            continue
+        match = TIME_LIMIT_DIR_PATTERN.fullmatch(entry.name)
+        if match:
+            time_limits.append(int(match.group(1)))
+    return sorted(set(time_limits))
+
+
 def aggregate(results_dir):
     rows = []
-    for tl in TIME_LIMITS:
+    time_limits = discover_time_limits(results_dir)
+    if not time_limits:
+        print(f"  WARNING: no tl_<seconds>s result folders found in {results_dir}")
+
+    for tl in time_limits:
         cond_dir = os.path.join(results_dir, f"tl_{tl}s")
         if not os.path.isdir(cond_dir):
             print(f"  WARNING: missing {cond_dir}")
@@ -245,9 +260,6 @@ def fig_manuscript_compact(df, out_dir):
     service_mean = df["service_rate_mean"].to_numpy()
     service_std = df["service_rate_std"].fillna(0).to_numpy()
     
-    line1 = ax1.plot(x, service_mean, marker="o", ms=5.5, lw=2.3,
-                     color=COLORS["service"], label="Service rate",
-                     zorder=3)
     ax1.fill_between(x, service_mean - service_std, service_mean + service_std,
                      alpha=0.15, color=COLORS["service"], zorder=2)
     
@@ -273,10 +285,16 @@ def fig_manuscript_compact(df, out_dir):
     
     co2_mean = df["co2_red_mean"].to_numpy()
     co2_std = df["co2_red_std"].fillna(0).to_numpy()
+
+    # Draw all three lines on the foreground axes so their z-orders interleave
+    # reliably across the twin y-axes. The service line still uses ax1's scale.
+    line1 = ax2.plot(x, service_mean, marker="o", ms=5.5, lw=2.3,
+                     color=COLORS["service"], label="Service rate",
+                     transform=ax1.transData, zorder=4)
     
     line2 = ax2.plot(x, vmt_mean, marker="s", ms=5.5, lw=2.3,
                      color=COLORS["vmt"], label="System VMT reduction",
-                     zorder=3)
+                     zorder=5)
     ax2.fill_between(x, vmt_mean - vmt_std, vmt_mean + vmt_std,
                      alpha=0.15, color=COLORS["vmt"], zorder=2)
 
@@ -348,7 +366,8 @@ def fig_combined(df, out_dir):
 
     fig.suptitle(
         "Solver Time-Limit Calibration — Heterogeneous AV First-Mile\n"
-        "Melton Station · 1465 Myki Commuters · 224 Seats (Balanced Mix) · Seed average",
+        "Footscray Station · Residential-Origin Demand · "
+        "80-Seat Reference Fleet · Seed average",
         fontsize=11, y=1.02,
     )
 

@@ -1,343 +1,237 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ARCHIVED / NOT ACTIVE FOR CORRECTED FOOTSCRAY PAPER WORKFLOW.
-# Retained only for historical legacy Melton capacity diagnostics/reproducibility.
-# Do not use for corrected Footscray experiments.
+# Active Footscray representative-fleet capacity sensitivity.
+#
+# Vehicle counts are obtained by scaling each representative's 100% counts
+# and rounding each count with round-half-up. A vehicle type present at 100%
+# is kept at a minimum of one vehicle for every nonzero scale. Because this is
+# integer count scaling, actual_total_seats can differ from target_seats.
+#
+# CONFIG_ONLY=1 generates configs/metadata and exits. LABELS_OVERRIDE accepts
+# space-separated fleet names or representative labels. DRY_RUN=1 lists jobs.
 
-# Capacity sensitivity for selected representative fleets.
-# Paper setup:
-# - residential-origin demand
-# - PyVRP/HGS
-# - 300s solver time limit
-# - 15 seeds
-# - fixed 20-minute train-aligned slots
-# - 0-minute buffer
-# - no distance-band penalty
-# - raw-distance objective
-#
-# Fleets:
-#   balanced      = S25/M25/C25/MB25
-#   vmt_oriented  = S25/M0/C0/MB75
-#   low_emission  = S25/M75/C0/MB0
-#   all_car       = S0/M0/C100/MB0
-#
-# Capacity scales:
-#   x0.90, x1.00, x1.10, x1.25 relative to the 224-seat reference.
-#
-# Usage:
-#   bash experiments/scripts/run_capacity_sensitivity_representative.sh [--dry-run]
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ROOT="$ROOT_DIR"
-cd "$ROOT_DIR"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+SIM_SCRIPT="${SIM_SCRIPT:-$ROOT/python/simulate_first_mile_pyvrp.py}"
+BASE_CONFIG="${BASE_CONFIG:-config/footscray_base_config.json}"
+COMMUTERS_CSV="${COMMUTERS_CSV:-files/inputs/footscray_commuters_residential.csv}"
+STATIONS_CSV="${STATIONS_CSV:-files/inputs/footscray_station.csv}"
+MATRICES_DIR="${MATRICES_DIR:-dataset/FOOTSCRAY/footscray_residential_matrix}"
+OUTPUT_DIR="${OUTPUT_DIR:-experiments/results/footscray}"
+EXPERIMENT="${EXPERIMENT:-capacity_sensitivity_representative_footscray}"
 
-SIM_SCRIPT="${SIM_SCRIPT:-python/simulate_first_mile_pyvrp.py}"
+for variable in BASE_CONFIG COMMUTERS_CSV STATIONS_CSV MATRICES_DIR OUTPUT_DIR; do
+    value="${!variable}"
+    [[ "$value" == /* ]] || printf -v "$variable" '%s/%s' "$ROOT" "$value"
+done
 
-RESULTS_ROOT="${RESULTS_ROOT:-$ROOT/experiments/results/capacity_sensitivity_representative_residential}"
-CONFIG_ROOT="${CONFIG_ROOT:-${RESULTS_ROOT}/configs}"
+RESULTS_DIR="$OUTPUT_DIR/$EXPERIMENT"
+CONFIGS_DIR="${CONFIGS_DIR:-$RESULTS_DIR/configs}"
+[[ "$CONFIGS_DIR" == /* ]] || CONFIGS_DIR="$ROOT/$CONFIGS_DIR"
 
-TIME_LIMIT="${TIME_LIMIT:-300}"
-NUM_SEEDS="${NUM_SEEDS:-15}"
-
-# Dry-run flag: support env var or first positional arg
-DRY_RUN=${DRY_RUN:-0}
+TIME_LIMIT_SECONDS="${TIME_LIMIT_SECONDS:-300}"
+N_SEEDS="${N_SEEDS:-15}"
+TOTAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+PARALLEL_JOBS="${PARALLEL_JOBS:-$(( TOTAL_CORES > 2 ? TOTAL_CORES - 2 : 1 ))}"
+RESUME="${RESUME:-1}"
+CONFIG_ONLY="${CONFIG_ONLY:-0}"
+DRY_RUN="${DRY_RUN:-0}"
+LABELS_OVERRIDE="${LABELS_OVERRIDE:-}"
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
-# Resume existing completed runs? (1 = skip completed, 0 = rerun)
-RESUME="${RESUME:-1}"
-
-# Number of parallel jobs: prefer JOBS, fallback to PARALLEL_JOBS, default 9
-# Default to 10 jobs for overnight runs unless overridden
-JOBS="${JOBS:-${PARALLEL_JOBS:-10}}"
-
-# Always create roots (allow inspecting configs during dry-run)
-mkdir -p "$RESULTS_ROOT"
-mkdir -p "$CONFIG_ROOT"
-
-# ---------------------------------------------------------------------
-# Base data paths. Override with COMMUTERS_CSV, STATIONS_CSV, or MATRICES_DIR.
-# Residential-origin demand is the main paper setting. Use generic
-# reachable-node demand only through explicit overrides or clearly named
-# robustness output folders.
-# Default matrices: $ROOT/dataset/MELTON/melton_residential_matrix.
-# ---------------------------------------------------------------------
-
-COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters_residential.csv}"
-STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
-MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_residential_matrix}"
-BASE_CONFIG="${BASE_CONFIG:-$ROOT/config/legacy_melton_base_config.json}"
-if [[ "$BASE_CONFIG" != /* ]]; then
-  BASE_CONFIG="$ROOT/$BASE_CONFIG"
-fi
-
-# ---------------------------------------------------------------------
-# Fleet definitions.
-#
-# Counts are chosen to preserve the intended seat shares as closely as
-# possible at each capacity scale.
-#
-# Reference 224-seat compositions:
-# Balanced:     56S / 28M / 14C / 7MB    = 224 seats
-# VMT-oriented: 56S / 0M  / 0C  / 21MB   = 224 seats
-# Low-emission: 56S / 84M / 0C  / 0MB    = 224 seats
-# All-car:      0S  / 0M  / 56C / 0MB    = 224 seats
-#
-# Scaled counts:
-#
-# x0.90 target approx 202 seats
-# x1.00 target 224 seats
-# x1.10 target approx 246 seats
-# x1.25 target 280 seats
-# ---------------------------------------------------------------------
-
-declare -a FLEETS=(
-  "balanced"
-  "vmt_oriented"
-  "low_emission"
-  "all_car"
-)
-
-declare -a SCALES=(
-  "x0.90"
-  "x1.00"
-  "x1.10"
-  "x1.25"
-)
-
-get_counts() {
-  local fleet="$1"
-  local scale="$2"
-
-  # Output format:
-  # scooters mopeds cars minibuses total_seats
-
-  if [[ "$fleet" == "balanced" ]]; then
-    case "$scale" in
-      "x0.90") echo "50 25 13 6 200" ;;
-      "x1.00") echo "56 28 14 7 224" ;;
-      "x1.10") echo "61 31 15 8 247" ;;
-      "x1.25") echo "70 35 17 9 280" ;;
-      *) echo "Unknown scale: $scale" >&2; exit 1 ;;
-    esac
-
-  elif [[ "$fleet" == "vmt_oriented" ]]; then
-    case "$scale" in
-      # Seat shares: S25/M0/C0/MB75
-      "x0.90") echo "50 0 0 19 202" ;;
-      "x1.00") echo "56 0 0 21 224" ;;
-      "x1.10") echo "62 0 0 23 246" ;;
-      "x1.25") echo "70 0 0 26 278" ;;
-      *) echo "Unknown scale: $scale" >&2; exit 1 ;;
-    esac
-
-  elif [[ "$fleet" == "low_emission" ]]; then
-    case "$scale" in
-      # Seat shares: S25/M75/C0/MB0
-      "x0.90") echo "50 76 0 0 202" ;;
-      "x1.00") echo "56 84 0 0 224" ;;
-      "x1.10") echo "62 93 0 0 248" ;;
-      "x1.25") echo "70 105 0 0 280" ;;
-      *) echo "Unknown scale: $scale" >&2; exit 1 ;;
-    esac
-
-  elif [[ "$fleet" == "all_car" ]]; then
-    case "$scale" in
-      # Seat shares: S0/M0/C100/MB0
-      "x0.90") echo "0 0 50 0 200" ;;
-      "x1.00") echo "0 0 56 0 224" ;;
-      "x1.10") echo "0 0 62 0 248" ;;
-      "x1.25") echo "0 0 70 0 280" ;;
-      *) echo "Unknown scale: $scale" >&2; exit 1 ;;
-    esac
-
-  else
-    echo "Unknown fleet: $fleet" >&2
-    exit 1
-  fi
-}
-
-make_config() {
-  local fleet="$1"
-  local scale="$2"
-  local config_path="$3"
-
-  read -r n_scooter n_moped n_car n_minibus total_seats < <(get_counts "$fleet" "$scale")
-
-  "$PYTHON_BIN" - "$BASE_CONFIG" "$config_path" "$fleet" "$scale" "$TIME_LIMIT" "$n_scooter" "$n_moped" "$n_car" "$n_minibus" "$total_seats" <<'PYEOF'
+generate_configs() {
+    mkdir -p "$CONFIGS_DIR"
+    "$PYTHON_BIN" - "$BASE_CONFIG" "$CONFIGS_DIR" "$TIME_LIMIT_SECONDS" <<'PYEOF'
 import copy
+import csv
 import json
 import sys
+from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 
-base_config, config_path, fleet, scale = sys.argv[1:5]
-time_limit = int(sys.argv[5])
-counts = {
-    "scooter": int(sys.argv[6]),
-    "moped": int(sys.argv[7]),
-    "car": int(sys.argv[8]),
-    "minibus": int(sys.argv[9]),
-}
-total_seats = int(sys.argv[10])
-
-labels = {
-    "balanced": ("Balanced", "S25/M25/C25/MB25"),
-    "vmt_oriented": ("VMT-Opt", "S25/M0/C0/MB75"),
-    "low_emission": ("Low-Emission", "S25/M75/C0/MB0"),
-    "all_car": ("All-Car", "S0/M0/C100/MB0"),
+base_path, configs_dir, time_limit = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3])
+reference_seats = 80
+scales = [50, 100, 150, 200]
+vehicle_order = ["Scooter", "Moped", "Car", "Minibus"]
+representatives = {
+    "balanced": ("comp_S25_M25_C25_MB25", [20, 10, 5, 2]),
+    "vmt_oriented": ("comp_S25_M0_C0_MB75", [20, 0, 0, 6]),
+    "low_emission": ("comp_S50_M50_C0_MB0", [40, 20, 0, 0]),
+    "all_car": ("comp_S0_M0_C100_MB0", [0, 0, 20, 0]),
 }
 
-with open(base_config, "r", encoding="utf-8") as f:
-    cfg = json.load(f)
+for old_config in configs_dir.glob("*.json"):
+    old_config.unlink()
 
-base_vehicle_by_name = {
-    vehicle["name"].lower(): vehicle
-    for vehicle in cfg["fleet"]["vehicle_types"]
-}
-missing = [name for name in counts if name not in base_vehicle_by_name]
-if missing:
-    raise ValueError(f"Base config missing vehicle definitions: {missing}")
+with open(base_path, encoding="utf-8") as handle:
+    base = json.load(handle)
+base_vehicles = {item["name"]: item for item in base["fleet"]["vehicle_types"]}
+capacities = {name: int(base_vehicles[name]["capacity"]) for name in vehicle_order}
+expected = {"Scooter": 1, "Moped": 2, "Car": 4, "Minibus": 10}
+if capacities != expected:
+    raise ValueError(f"Footscray capacities must be {expected}; found {capacities}")
 
-cfg["experiment_name"] = f"capacity_sensitivity_{fleet}_{scale}"
-cfg["capacity_metadata"] = {
-    "fleet": fleet,
-    "scale": scale,
-    "total_fleet_seats": total_seats,
-    "scooter_count": counts["scooter"],
-    "moped_count": counts["moped"],
-    "car_count": counts["car"],
-    "minibus_count": counts["minibus"],
-    "display_label": labels[fleet][0],
-    "seat_share_label": labels[fleet][1],
-}
-cfg.setdefault("solver_config", {})["time_limit_seconds"] = time_limit
-cfg["fleet"]["vehicle_types"] = []
+def round_half_up(value):
+    return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
-for name in ["scooter", "moped", "car", "minibus"]:
-    count = counts[name]
-    if count <= 0:
-        continue
-    vehicle_cfg = copy.deepcopy(base_vehicle_by_name[name])
-    vehicle_cfg["fleet_size"] = count
-    cfg["fleet"]["vehicle_types"].append(vehicle_cfg)
+rows = []
+for fleet_name, (representative_label, base_counts) in representatives.items():
+    for nominal_scale_pct in scales:
+        factor = Decimal(nominal_scale_pct) / Decimal(100)
+        counts = []
+        for count in base_counts:
+            scaled = round_half_up(Decimal(count) * factor)
+            counts.append(max(1, scaled) if count > 0 and nominal_scale_pct > 0 else 0)
+        seats_by_type = {
+            name: counts[index] * capacities[name]
+            for index, name in enumerate(vehicle_order)
+        }
+        actual_total_seats = sum(seats_by_type.values())
+        metadata = {
+            "fleet_name": fleet_name,
+            "representative_label": representative_label,
+            "nominal_scale_pct": nominal_scale_pct,
+            "target_seats": reference_seats * nominal_scale_pct / 100,
+            "actual_total_seats": actual_total_seats,
+            "rounding_rule": "round-half-up per vehicle count; minimum 1 for types present at 100%",
+        }
+        for index, name in enumerate(vehicle_order):
+            key = name.lower()
+            metadata[f"{key}_count"] = counts[index]
+            metadata[f"realized_{key}_seat_share_pct"] = round(
+                100 * seats_by_type[name] / actual_total_seats, 6
+            )
 
-with open(config_path, "w", encoding="utf-8") as f:
-    json.dump(cfg, f, indent=2)
+        cfg = copy.deepcopy(base)
+        condition = f"{fleet_name}_scale_{nominal_scale_pct:03d}"
+        cfg["experiment_name"] = condition
+        cfg["capacity_metadata"] = metadata
+        cfg.setdefault("solver_config", {})["time_limit_seconds"] = time_limit
+        cfg["fleet"]["vehicle_types"] = []
+        for index, name in enumerate(vehicle_order):
+            if counts[index] == 0:
+                continue
+            vehicle = copy.deepcopy(base_vehicles[name])
+            vehicle["fleet_size"] = counts[index]
+            cfg["fleet"]["vehicle_types"].append(vehicle)
+
+        with (configs_dir / f"{condition}.json").open("w", encoding="utf-8") as handle:
+            json.dump(cfg, handle, indent=2)
+        rows.append({"condition": condition, **metadata})
+
+metadata_path = configs_dir / "capacity_sensitivity_metadata.csv"
+with metadata_path.open("w", newline="", encoding="utf-8") as handle:
+    writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+    writer.writeheader()
+    writer.writerows(rows)
+print(f"Wrote {len(rows)} configs and {metadata_path}")
 PYEOF
 }
 
-echo "Running representative fleet capacity sensitivity"
-echo "Results root: ${RESULTS_ROOT}"
-echo "Config root:  ${CONFIG_ROOT}"
-echo "Base config:  ${BASE_CONFIG}"
-echo "Time limit:   ${TIME_LIMIT}s"
-echo "Seeds:        ${NUM_SEEDS}"
-echo "Dry run:      ${DRY_RUN}"
-echo "Resume:       ${RESUME}"
-echo "Parallel jobs:${JOBS}"
-echo
+build_jobs() {
+    local job_file="$1"
+    "$PYTHON_BIN" - "$CONFIGS_DIR" "$job_file" "$N_SEEDS" "$LABELS_OVERRIDE" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
 
-# Validate prereqs before generating configs or jobs.
-command -v "$PYTHON_BIN" >/dev/null 2>&1 || { echo "ERROR: Missing command: $PYTHON_BIN"; exit 1; }
-for f in "$SIM_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$BASE_CONFIG"; do
-  [[ -f "$f" ]] || { echo "ERROR: Missing file: $f"; exit 1; }
-done
-[[ -d "$MATRICES_DIR" ]] || { echo "ERROR: Missing matrices dir: $MATRICES_DIR"; exit 1; }
-
-JOB_FILE=$(mktemp /tmp/capacity_sensitivity_jobs.XXXXXX)
-trap '[[ -f "$JOB_FILE" ]] && rm -f "$JOB_FILE"' EXIT
-for fleet in "${FLEETS[@]}"; do
-  for scale in "${SCALES[@]}"; do
-    read -r n_scooter n_moped n_car n_minibus total_seats < <(get_counts "$fleet" "$scale")
-    for seed in $(seq 1 "$NUM_SEEDS"); do
-      # Format: fleet scale seed total_seats config_path run_dir
-      config_path="${CONFIG_ROOT}/${fleet}_${scale}.json"
-      run_dir="${RESULTS_ROOT}/${fleet}/${scale}/seed_${seed}"
-      printf "%s %s %s %s %s %s\n" "$fleet" "$scale" "$seed" "$total_seats" "$config_path" "$run_dir" >> "$JOB_FILE"
-    done
-  done
-done
-
-# Count jobs
-TOTAL=$(wc -l < "$JOB_FILE" | tr -d ' ')
-echo "Total jobs:   ${TOTAL}"
-
-# Ensure config files exist before running jobs: create them now
-while read -r fleet scale seed seats config_path run_dir; do
-  make_config "$fleet" "$scale" "$config_path"
-done < "$JOB_FILE"
-
-PROG_COUNT=$(mktemp /tmp/capacity_sensitivity_prog.XXXXXX)
-PROG_LOCK=$(mktemp /tmp/capacity_sensitivity_lock.XXXXXX)
-echo "0" > "$PROG_COUNT"
-trap '[[ -f "$JOB_FILE" ]] && rm -f "$JOB_FILE"; [[ -f "$PROG_COUNT" ]] && rm -f "$PROG_COUNT"; [[ -f "$PROG_LOCK" ]] && rm -f "$PROG_LOCK"' EXIT
+configs_dir, job_path = Path(sys.argv[1]), Path(sys.argv[2])
+n_seeds, override = int(sys.argv[3]), sys.argv[4].split()
+configs = []
+for path in sorted(configs_dir.glob("*.json")):
+    data = json.loads(path.read_text(encoding="utf-8"))
+    meta = data["capacity_metadata"]
+    if override and meta["fleet_name"] not in override and meta["representative_label"] not in override:
+        continue
+    configs.append((path.stem, meta["fleet_name"], int(meta["nominal_scale_pct"])))
+if override and not configs:
+    raise SystemExit("LABELS_OVERRIDE did not match any fleet name or representative label")
+with job_path.open("w", encoding="utf-8") as handle:
+    for condition, fleet_name, scale in configs:
+        for seed in range(1, n_seeds + 1):
+            handle.write(f"{condition}\t{fleet_name}\t{scale}\t{seed}\n")
+print(f"Built {len(configs) * n_seeds} jobs from {len(configs)} conditions")
+PYEOF
+}
 
 progress_tick() {
-  local lock_dir="$PROG_LOCK.lock"
-  while ! mkdir "$lock_dir" 2>/dev/null; do sleep 0.02; done
-  local done
-  done=$(<"$PROG_COUNT")
-  done=$((done + 1))
-  echo "$done" > "$PROG_COUNT"
-  printf "[progress] %d/%d completed\n" "$done" "$TOTAL"
-  rmdir "$lock_dir"
+    local lock_dir="${PROG_LOCK}.lock" done
+    while ! mkdir "$lock_dir" 2>/dev/null; do sleep 0.02; done
+    done=$(<"$PROG_COUNT")
+    done=$((done + 1))
+    printf '%s\n' "$done" > "$PROG_COUNT"
+    printf '[progress] %d/%d completed\n' "$done" "$TOTAL"
+    rmdir "$lock_dir"
 }
-export -f progress_tick
+
+run_one() {
+    local condition="$1" fleet_name="$2" scale="$3" seed="$4"
+    local config_path="$CONFIGS_DIR/${condition}.json"
+    local run_dir="$RESULTS_DIR/$fleet_name/scale_${scale}/seed_${seed}"
+    local log_file="$run_dir/simulation.log"
+    if [[ "$RESUME" == "1" && -s "$run_dir/metrics.json" ]]; then
+        printf '[SKIP] %s seed=%s already has metrics.json\n' "$condition" "$seed"
+        progress_tick
+        return 0
+    fi
+    mkdir -p "$run_dir"
+    cp "$config_path" "$run_dir/config.json"
+    printf '[RUN] %s seed=%s\n' "$condition" "$seed"
+    if "$PYTHON_BIN" "$SIM_SCRIPT" \
+        "$COMMUTERS_CSV" "$STATIONS_CSV" "$MATRICES_DIR" \
+        "$run_dir/assignments.csv" "$run_dir/av_routes.csv" "$config_path" \
+        "$run_dir/baseline.json" "$run_dir/metrics.json" "$run_dir/comparison.json" \
+        "$seed" >"$log_file" 2>&1; then
+        printf '[DONE] %s seed=%s\n' "$condition" "$seed"
+    else
+        printf '[FAIL] %s seed=%s; see %s\n' "$condition" "$seed" "$log_file" >&2
+    fi
+    progress_tick
+}
+export -f progress_tick run_one
+
+echo "Footscray representative capacity sensitivity"
+echo "  Results: $RESULTS_DIR"
+echo "  Scales:  50%, 100%, 150%, 200% of the 80-seat reference"
+echo "  Seeds:   $N_SEEDS"
+echo "  Solver:  ${TIME_LIMIT_SECONDS}s"
+
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || { echo "ERROR: missing $PYTHON_BIN" >&2; exit 1; }
+for path in "$BASE_CONFIG" "$COMMUTERS_CSV" "$STATIONS_CSV"; do
+    [[ -f "$path" ]] || { echo "ERROR: missing file $path" >&2; exit 1; }
+done
+[[ -d "$MATRICES_DIR" ]] || { echo "ERROR: missing matrix directory $MATRICES_DIR" >&2; exit 1; }
+
+mkdir -p "$RESULTS_DIR"
+generate_configs
+[[ "$CONFIG_ONLY" == "1" ]] && { echo "CONFIG_ONLY=1: configuration generation complete"; exit 0; }
+
+JOB_FILE=$(mktemp /tmp/footscray_capacity_jobs.XXXXXX)
+PROG_COUNT=$(mktemp /tmp/footscray_capacity_progress.XXXXXX)
+PROG_LOCK=$(mktemp /tmp/footscray_capacity_lock.XXXXXX)
+trap 'rm -f "$JOB_FILE" "$PROG_COUNT" "$PROG_LOCK"' EXIT
+build_jobs "$JOB_FILE"
+TOTAL=$(wc -l < "$JOB_FILE" | tr -d ' ')
+printf '0\n' > "$PROG_COUNT"
+export PYTHON_BIN SIM_SCRIPT COMMUTERS_CSV STATIONS_CSV MATRICES_DIR CONFIGS_DIR RESULTS_DIR RESUME
 export PROG_COUNT PROG_LOCK TOTAL
 
 if [[ "$DRY_RUN" == "1" ]]; then
-  echo "DRY RUN  : listing jobs only"
-  echo "Jobs (fleet scale seed seats config_path run_dir):"
-  cat "$JOB_FILE"
-  exit 0
+    echo "DRY_RUN=1: jobs follow"
+    cat "$JOB_FILE"
+    exit 0
 fi
 
-run_one() {
-  local fleet="$1" scale="$2" seed="$3" seats="$4" config_path="$5" run_dir="$6"
-  local log_file="$run_dir/simulation.log"
-  mkdir -p "$run_dir"
-  if [[ "$RESUME" == "1" && -f "${run_dir}/metrics.json" ]] && \
-     [[ -s "${run_dir}/metrics.json" ]] && \
-     [[ -f "${run_dir}/baseline.json" ]] && \
-     [[ -f "${run_dir}/comparison.json" ]]; then
-    echo "[SKIP] ${fleet} ${scale} seed=${seed} already complete"
-    progress_tick
-    return 0
-  fi
-  cp "$config_path" "$run_dir/config.json"
-  echo "[RUN] fleet=${fleet} scale=${scale} seats=${seats} seed=${seed}"
-  if "${PYTHON_BIN}" "${SIM_SCRIPT}" \
-    "${COMMUTERS_CSV}" "${STATIONS_CSV}" "${MATRICES_DIR}" \
-    "${run_dir}/assignments.csv" "${run_dir}/av_routes.csv" \
-    "${config_path}" \
-    "${run_dir}/baseline.json" "${run_dir}/metrics.json" "${run_dir}/comparison.json" \
-    "${seed}" > "$log_file" 2>&1; then
-    echo "[RUN] fleet=${fleet} scale=${scale} seed=${seed} done"
-  else
-    echo "[RUN] fleet=${fleet} scale=${scale} seed=${seed} FAILED — see ${log_file}" >&2
-  fi
-  progress_tick
-}
-
-# Export variables used by run_one (parallel spawns subshells)
-export PYTHON_BIN SIM_SCRIPT COMMUTERS_CSV STATIONS_CSV MATRICES_DIR
-export RESULTS_ROOT CONFIG_ROOT RESUME PROG_COUNT PROG_LOCK TOTAL
-export -f run_one
-
-START=$(date +%s)
-
-if command -v parallel &>/dev/null; then
-  parallel --jobs "$JOBS" --colsep ' ' --eta run_one {1} {2} {3} {4} {5} {6} :::: "$JOB_FILE"
+if command -v parallel >/dev/null 2>&1; then
+    parallel --jobs "$PARALLEL_JOBS" --colsep '\t' run_one {1} {2} {3} {4} :::: "$JOB_FILE"
 else
-  echo "WARNING: GNU parallel not found, running sequentially"
-  while IFS=' ' read -r fleet scale seed seats config_path run_dir; do
-    run_one "$fleet" "$scale" "$seed" "$seats" "$config_path" "$run_dir"
-  done < "$JOB_FILE"
+    echo "GNU parallel not found; running sequentially"
+    while IFS=$'\t' read -r condition fleet_name scale seed; do
+        run_one "$condition" "$fleet_name" "$scale" "$seed"
+    done < "$JOB_FILE"
 fi
 
-END=$(date +%s)
-
-echo
-echo "Done. Results written to: ${RESULTS_ROOT}"
-printf "Total time: %ds\n" $((END - START))
+echo "Done: $RESULTS_DIR"

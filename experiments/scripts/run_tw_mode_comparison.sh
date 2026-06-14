@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# OPTIONAL CORRECTED FOOTSCRAY DIAGNOSTIC: compares time-window representations.
+# OPTIONAL FOOTSCRAY DIAGNOSTIC: compares time-window representations.
 # This is not the archived pre-departure-margin sweep; BUFFER_MINUTES is retained
 # only as the existing override for a fixed margin applied to every condition.
 
@@ -49,7 +49,7 @@ echo "╔═══════════════════════�
 echo "║        PyVRP TIME-WINDOW MODE COMPARISON                       ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo "  Fleet    : Footscray 80-seat reference fleet (minibus capacity 10)"
-echo "  Demand   : corrected Footscray residential-origin demand  |  Time: ${TIME_LIMIT_SECONDS}s"
+echo "  Demand   : Footscray residential-origin demand  |  Time: ${TIME_LIMIT_SECONDS}s"
 echo "  Pre-departure margin: ${BUFFER_MINUTES} min (fixed across conditions)"
 echo "  Distance-band penalty: none"
 echo "  Experiment folder: $EXPERIMENT"
@@ -156,10 +156,37 @@ echo "╔═══════════════════════�
 echo "║        EXPERIMENT COMPLETE                                      ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 printf "  Total time: %ds\n" $((END - START))
-FAILED=$(find "$RESULTS_DIR" -name "simulation.log" \
-    | xargs grep -l "Error\|Traceback" 2>/dev/null | wc -l | tr -d " ")
-[[ "$FAILED" -gt 0 ]] && echo "  WARNING: $FAILED run(s) may have failed" \
-    || echo "  No failures detected"
+
+MISSING_METRICS=0
+FAILURE_LOGS=0
+while read -r label seed; do
+    out_dir="$RESULTS_DIR/$label/run_$seed"
+    metrics="$out_dir/metrics.json"
+    log="$out_dir/simulation.log"
+
+    if [[ ! -s "$metrics" ]]; then
+        printf "  WARNING: missing or empty metrics: %s\n" "$metrics"
+        MISSING_METRICS=$((MISSING_METRICS + 1))
+    fi
+
+    if [[ -f "$log" ]] && grep -Eq 'ERROR|Error|Traceback|Exception|FAILED|failed' "$log"; then
+        printf "  WARNING: failure marker found in: %s\n" "$log"
+        FAILURE_LOGS=$((FAILURE_LOGS + 1))
+    fi
+done < "$JOB_FILE"
+
+if (( MISSING_METRICS == 0 )); then
+    printf "  Metrics: %d/%d metrics.json files present\n" "$TOTAL" "$TOTAL"
+else
+    printf "  WARNING: %d/%d runs are missing a non-empty metrics.json\n" \
+        "$MISSING_METRICS" "$TOTAL"
+fi
+
+if (( FAILURE_LOGS == 0 )); then
+    echo "  Logs: no failure markers detected"
+else
+    printf "  WARNING: %d simulation log(s) contain failure markers\n" "$FAILURE_LOGS"
+fi
 echo ""
 
 echo "  Next: $PYTHON_BIN experiments/scripts/plot_tw_mode_comparison_2x2.py --results-dir $RESULTS_DIR --out $RESULTS_DIR/plots"

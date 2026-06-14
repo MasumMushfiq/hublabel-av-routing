@@ -1,27 +1,23 @@
 #!/usr/bin/env bash
-# ARCHIVED / NOT ACTIVE FOR CORRECTED FOOTSCRAY PAPER WORKFLOW.
-# Retained only for historical legacy Melton fleet diagnostics/reproducibility.
-# Do not use for corrected Footscray experiments.
 # =============================================================================
 # run_fleet_composition_grid.sh
-# Fleet composition grid experiment — fixed 224-seat capacity sweep.
+# Active Footscray fleet-composition grid with a fixed 80-seat reference.
 #
 # Purpose:
 #   Enumerate all 25%-increment seat-share combinations across Scooter,
-#   Moped, Car, and Minibus with total capacity fixed at 224 seats. Writes
+#   Moped, Car, and Minibus with total capacity fixed at 80 seats. Writes
 #   one JSON config per composition plus a composition_metadata.csv.
 #
 # Design:
 #   Grid    : shares in {0,25,50,75,100} with s+m+c+b == 100%
-#   Total   : 35 compositions × N_SEEDS (default 15) jobs
-#   Capacity: 224 seats fixed across all conditions (56 seats per 25% block)
-#   Demand  : 1465 Myki commuters
-#   Solver  : PyVRP/HGS, default time limit 300s, fixed_slots 20 min, buffer 0,
-#             penalty 'none'
+#   Total   : 35 compositions x N_SEEDS (default 15) jobs
+#   Capacity: 80 seats fixed across all conditions (20 seats per 25% block)
+#   Demand  : 586 Footscray residential-origin commuters
+#   Solver  : PyVRP/HGS, default time limit 300s
 #
 # Results and configs:
-#   experiments/results/fleet_composition_grid_224seats/
-#   experiments/results/fleet_composition_grid_224seats/configs/
+#   experiments/results/footscray/fleet_composition_grid_footscray_80seats/
+#   experiments/results/footscray/fleet_composition_grid_footscray_80seats/configs/
 #
 # Environment variables:
 #   --dry-run        list jobs only (also supported as first arg)
@@ -32,26 +28,28 @@
 #   LABELS_OVERRIDE  space-separated list of condition labels to run only
 #   TIME_LIMIT_SECONDS   solver time limit (default: 300)
 #   N_SEEDS              number of random seeds (default: 15)
-#   OUTPUT_DIR           output root (default: experiments/results/fleet_composition_grid_224seats)
-#                        RESULTS_DIR is also accepted as a legacy alias
-#   CONFIGS_DIR          configs output dir (default: OUTPUT_DIR/configs)
-#   BASE_CONFIG          legacy Melton config template (default: config/legacy_melton_base_config.json)
-#   COMMUTERS_CSV        commuter demand file (default: $ROOT/files/inputs/commuters_residential.csv)
-#   MATRICES_DIR         distance/duration matrix dir (default: $ROOT/dataset/MELTON/melton_residential_matrix)
-#   STATIONS_CSV         station file (default: $ROOT/files/inputs/stations.csv)
+#   OUTPUT_DIR           output root (default: experiments/results/footscray)
+#   EXPERIMENT           folder name (default: fleet_composition_grid_footscray_80seats)
+#   CONFIGS_DIR          configs output dir (default: OUTPUT_DIR/EXPERIMENT/configs)
+#   BASE_CONFIG          template (default: config/footscray_base_config.json)
+#   COMMUTERS_CSV        demand file (default: files/inputs/footscray_commuters_residential.csv)
+#   MATRICES_DIR         matrix dir (default: dataset/FOOTSCRAY/footscray_residential_matrix)
+#   STATIONS_CSV         station file (default: files/inputs/footscray_station.csv)
+#   PYTHON_BIN           Python executable (default: python3)
 #
 # Usage (from hub_label/ root):
 #   bash experiments/scripts/run_fleet_composition_grid.sh
 #   bash experiments/scripts/run_fleet_composition_grid.sh --dry-run
 #   CONFIG_ONLY=1 bash experiments/scripts/run_fleet_composition_grid.sh
 #   PARALLEL_JOBS=8 N_SEEDS=5 bash experiments/scripts/run_fleet_composition_grid.sh
-#   OUTPUT_DIR=experiments/test_results/fleet_composition_grid_224seats \
+#   OUTPUT_DIR=experiments/test_results/footscray EXPERIMENT=fleet_grid_check \
 #       TIME_LIMIT_SECONDS=60 N_SEEDS=1 bash experiments/scripts/run_fleet_composition_grid.sh
 # =============================================================================
 
 set -euo pipefail
 
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+export PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 # ── Parallelism ───────────────────────────────────────────────────────────────
 TOTAL_CORES=$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)
@@ -65,20 +63,20 @@ PYVRP_SCRIPT="$ROOT/python/simulate_first_mile_pyvrp.py"
 # Residential-origin demand is the main paper setting. Use generic
 # reachable-node demand only through explicit overrides or clearly named
 # robustness output folders.
-COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/commuters_residential.csv}"
-STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/stations.csv}"
-MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/MELTON/melton_residential_matrix}"
-BASE_CONFIG=${BASE_CONFIG:-config/legacy_melton_base_config.json}
+COMMUTERS_CSV="${COMMUTERS_CSV:-$ROOT/files/inputs/footscray_commuters_residential.csv}"
+STATIONS_CSV="${STATIONS_CSV:-$ROOT/files/inputs/footscray_station.csv}"
+MATRICES_DIR="${MATRICES_DIR:-$ROOT/dataset/FOOTSCRAY/footscray_residential_matrix}"
+BASE_CONFIG="${BASE_CONFIG:-config/footscray_base_config.json}"
 if [[ "$BASE_CONFIG" != /* ]]; then
     BASE_CONFIG="$ROOT/$BASE_CONFIG"
 fi
 
-EXPERIMENT="fleet_composition_grid_224seats"
-DEFAULT_RESULTS_DIR="$ROOT/experiments/results/$EXPERIMENT"
-RESULTS_DIR="${OUTPUT_DIR:-${RESULTS_DIR:-$DEFAULT_RESULTS_DIR}}"
-if [[ "$RESULTS_DIR" != /* ]]; then
-    RESULTS_DIR="$ROOT/$RESULTS_DIR"
+OUTPUT_DIR="${OUTPUT_DIR:-experiments/results/footscray}"
+EXPERIMENT="${EXPERIMENT:-fleet_composition_grid_footscray_80seats}"
+if [[ "$OUTPUT_DIR" != /* ]]; then
+    OUTPUT_DIR="$ROOT/$OUTPUT_DIR"
 fi
+RESULTS_DIR="$OUTPUT_DIR/$EXPERIMENT"
 CONFIGS_DIR="${CONFIGS_DIR:-$RESULTS_DIR/configs}"
 if [[ "$CONFIGS_DIR" != /* ]]; then
     CONFIGS_DIR="$ROOT/$CONFIGS_DIR"
@@ -97,7 +95,7 @@ CONFIG_ONLY=${CONFIG_ONLY:-0}
 generate_configs() {
     rm -rf "$CONFIGS_DIR"
     mkdir -p "$CONFIGS_DIR"
-    python3 - "$CONFIGS_DIR" "$TIME_LIMIT_SECONDS" "$BASE_CONFIG" << 'PYEOF'
+    "$PYTHON_BIN" - "$CONFIGS_DIR" "$TIME_LIMIT_SECONDS" "$BASE_CONFIG" << 'PYEOF'
 import sys, json, csv, copy
 from itertools import product
 
@@ -105,7 +103,7 @@ CONFIGS_DIR = sys.argv[1]
 TIME_LIMIT = int(sys.argv[2])
 BASE_CONFIG = sys.argv[3]
 SHARES = [0,25,50,75,100]
-SEATS_PER_25 = 56
+TOTAL_SEATS = 80
 
 with open(BASE_CONFIG, "r", encoding="utf-8") as f:
     base_cfg = json.load(f)
@@ -119,16 +117,19 @@ missing = [name for name in vehicle_order if name not in base_vehicle_by_name]
 if missing:
     raise ValueError(f"Base config missing vehicle definitions: {missing}")
 CAPS = {name: int(base_vehicle_by_name[name]["capacity"]) for name in vehicle_order}
+expected_caps = {"Scooter": 1, "Moped": 2, "Car": 4, "Minibus": 10}
+if CAPS != expected_caps:
+    raise ValueError(f"Footscray vehicle capacities must be {expected_caps}; found {CAPS}")
 
 # Build compositions
 comps = []
 for ss, ms, cs, bs in product(SHARES, repeat=4):
     if ss + ms + cs + bs != 100:
         continue
-    s_seats = (ss // 25) * SEATS_PER_25
-    m_seats = (ms // 25) * SEATS_PER_25
-    c_seats = (cs // 25) * SEATS_PER_25
-    b_seats = (bs // 25) * SEATS_PER_25
+    s_seats = ss * TOTAL_SEATS // 100
+    m_seats = ms * TOTAL_SEATS // 100
+    c_seats = cs * TOTAL_SEATS // 100
+    b_seats = bs * TOTAL_SEATS // 100
 
     ns = int(s_seats // CAPS["Scooter"]) if s_seats > 0 else 0
     nm = int(m_seats // CAPS["Moped"])   if m_seats > 0 else 0
@@ -164,11 +165,16 @@ for ss, ms, cs, bs in product(SHARES, repeat=4):
 print(f"\n  {'Condition':<35} {'S%':>4} {'M%':>4} {'C%':>4} {'B%':>4} | {'S#':>4} {'M#':>4} {'C#':>4} {'B#':>4} | {'Seats':>5} {'Veh':>4}")
 print(f"  {'-'*110}")
 for c in comps:
-    ok = '' if c['total_fleet_seats'] == 224 else f" ← {c['total_fleet_seats']}"
+    ok = '' if c['total_fleet_seats'] == TOTAL_SEATS else f" <- {c['total_fleet_seats']}"
     print(f"  {c['condition']:<35} {c['target_scooter_share']:>4} {c['target_moped_share']:>4} {c['target_car_share']:>4} {c['target_minibus_share']:>4} | {c['scooter_count']:>4} {c['moped_count']:>4} {c['car_count']:>4} {c['minibus_count']:>4} | {c['total_fleet_seats']:>5}{ok} {c['total_fleet_vehicles']:>4}")
 
-not224 = [c for c in comps if c['total_fleet_seats'] != 224]
-print(f"\n  Compositions not exactly 224 seats: {len(not224)}")
+not80 = [c for c in comps if c['total_fleet_seats'] != TOTAL_SEATS]
+if len(comps) != 35 or not80:
+    raise ValueError(
+        f"Expected 35 exact {TOTAL_SEATS}-seat compositions; "
+        f"found {len(comps)} compositions and {len(not80)} capacity mismatches"
+    )
+print(f"\n  Compositions not exactly 80 seats: {len(not80)}")
 print(f"  Total compositions: {len(comps)}\n")
 
 # Write configs
@@ -210,7 +216,7 @@ build_jobs() {
     local job_file="$1"
     # Build SEEDS string from N_SEEDS
     SEEDS="$(seq -s ' ' 1 $N_SEEDS)"
-    python3 - "$CONFIGS_DIR" "$job_file" << 'PYEOF'
+    "$PYTHON_BIN" - "$CONFIGS_DIR" "$job_file" << 'PYEOF'
 import sys, json, os
 
 configs_dir = sys.argv[1]
@@ -259,7 +265,7 @@ run_one() {
     cp "$config_path" "$out_dir/config.json"
     printf "[%s seed_%s] starting...\n" "$condition" "$seed"
 
-    if python3 "$PYVRP_SCRIPT" \
+    if "$PYTHON_BIN" "$PYVRP_SCRIPT" \
             "$COMMUTERS_CSV" \
             "$STATIONS_CSV" \
             "$MATRICES_DIR" \
@@ -294,21 +300,23 @@ export -f progress_tick
 # ── Main ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║        PyVRP FLEET COMPOSITION GRID — 224 SEATS FIXED          ║"
+echo "║          FOOTSCRAY 80-SEAT FLEET-COMPOSITION GRID            ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
-echo "  Demand   : 1465 Myki commuters"
-echo "  Capacity : 224 seats fixed across all conditions"
-echo "  Balanced reference: comp_S25_M25_C25_MB25 = 56S / 28M / 14C / 7MB"
-echo "  Solver   : ${TIME_LIMIT_SECONDS}s, fixed_slots 20 min, buffer 0, penalty none"
+echo "  Demand   : Footscray residential-origin demand (586 commuters)"
+echo "  Capacity : 80 seats fixed across all conditions"
+echo "  Balanced reference: comp_S25_M25_C25_MB25 = 20S / 10M / 5C / 2MB"
+echo "  Solver   : ${TIME_LIMIT_SECONDS}s time limit"
 echo "  Grid     : 25% seat-share increments, 35 compositions"
 echo "  Seeds    : $N_SEEDS"
 echo "  Parallel : $PARALLEL_JOBS workers ($TOTAL_CORES cores, 2 reserved)"
 echo "  Output   : $RESULTS_DIR"
 echo "  Base cfg : $BASE_CONFIG"
+echo "  Python   : $PYTHON_BIN"
 echo ""
 
 # Validate prereqs
+command -v "$PYTHON_BIN" >/dev/null 2>&1 || { echo "ERROR: Missing command: $PYTHON_BIN"; exit 1; }
 for f in "$PYVRP_SCRIPT" "$COMMUTERS_CSV" "$STATIONS_CSV" "$BASE_CONFIG"; do
     [[ -f "$f" ]] || { echo "ERROR: Missing file: $f"; exit 1; }
 done
@@ -367,7 +375,7 @@ echo "0" > "$PROG_COUNT"
 trap "rm -f $JOB_FILE $PROG_COUNT $PROG_LOCK" EXIT
 export PROG_COUNT PROG_LOCK TOTAL
 
-export CONFIGS_DIR RESULTS_DIR PYVRP_SCRIPT COMMUTERS_CSV STATIONS_CSV MATRICES_DIR RESUME
+export CONFIGS_DIR RESULTS_DIR PYVRP_SCRIPT COMMUTERS_CSV STATIONS_CSV MATRICES_DIR RESUME PYTHON_BIN
 
 START=$(date +%s)
 
@@ -401,5 +409,5 @@ FAILED=$(find "$RESULTS_DIR" -name "simulation.log" \
     || echo "  No failures detected"
 
 echo ""
-echo "  Next: python3 experiments/scripts/plot_fleet_composition_grid.py"
+echo "  Next: $PYTHON_BIN experiments/scripts/plot_fleet_composition_grid.py --results-dir $RESULTS_DIR"
 echo ""

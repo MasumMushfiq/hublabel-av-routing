@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ARCHIVED / NOT ACTIVE FOR CORRECTED FOOTSCRAY PAPER WORKFLOW.
+# ARCHIVED / NOT ACTIVE FOR THE FOOTSCRAY PAPER WORKFLOW.
 # Retained only for historical legacy Melton representative-result reproducibility.
-# Do not use for corrected Footscray experiments.
+# Do not use for Footscray experiments.
 # =============================================================================
 # run_representative_fleet_comparison.sh
 # Gather/copy representative fleet outputs from the already-completed
